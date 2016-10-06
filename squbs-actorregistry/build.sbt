@@ -7,7 +7,7 @@ javaOptions in Test += "-Xmx512m"
 libraryDependencies ++= Seq(
   "org.scala-lang" % "scala-reflect" % scalaVersion.value,
   "org.scalatest" %% "scalatest" % "2.2.1" % "test->*",
-  "com.typesafe.scala-logging" %% "scala-logging" % "3.1.0",
+  "com.typesafe.scala-logging" %% "scala-logging" % scalaLogging,
   "com.typesafe.akka" %% "akka-actor" % akkaV,
   "com.typesafe.akka" %% "akka-agent" % akkaV,
   "org.scala-lang.modules" %% "scala-java8-compat" % "0.7.0",

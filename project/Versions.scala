@@ -19,4 +19,5 @@ object Versions {
   val sprayV = "1.3.3"
   val scalaLogging = "3.5.0"
   val logbackClassic = "1.1.3"
+  val scalaTest = "2.2.1"
 }

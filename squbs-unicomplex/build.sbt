@@ -6,7 +6,7 @@ javaOptions in Test += "-Xmx512m"
 
 libraryDependencies ++= Seq(
   "org.scala-lang" % "scala-reflect" % scalaVersion.value,
-  "org.scalatest" %% "scalatest" % "2.2.1" % "test->*",
+  "org.scalatest" %% "scalatest" % scalaTest % "test->*",
   "com.typesafe.scala-logging" %% "scala-logging" % scalaLogging,
   "ch.qos.logback" % "logback-classic" % logbackClassic % "test",
   "org.scala-lang.modules" %% "scala-java8-compat" % "0.7.0",

@@ -23,7 +23,7 @@ libraryDependencies ++= Seq(
   "org.json4s"                %% "json4s-jackson"               % "3.3.0",
   "com.fasterxml.jackson.module" %% "jackson-module-scala"      % "2.6.3",
   "com.fasterxml.jackson.module" % "jackson-module-parameter-names" % "2.6.3",
-  "ch.qos.logback" % "logback-classic" % "1.1.3" % "test"
+  "ch.qos.logback" % "logback-classic" % logbackClassic % "test"
 ) ++ akkaDependencies(akkaV) ++ sprayDependencies(sprayV)
 
 def akkaDependencies(v: String) = Seq(

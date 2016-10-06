@@ -8,7 +8,7 @@ libraryDependencies ++= Seq(
   "org.scala-lang" % "scala-reflect" % scalaVersion.value,
   "org.scalatest" %% "scalatest" % "2.2.1" % "test->*",
   "com.typesafe.scala-logging" %% "scala-logging" % scalaLogging,
-  "ch.qos.logback" % "logback-classic" % "1.1.3" % "test",
+  "ch.qos.logback" % "logback-classic" % logbackClassic % "test",
   "org.scala-lang.modules" %% "scala-java8-compat" % "0.7.0",
   "com.wix" %% "accord-core" % "0.5"
 ) ++ akka(akkaV) ++ spray(sprayV)

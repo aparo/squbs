@@ -9,7 +9,7 @@ libraryDependencies ++= Seq(
   "com.typesafe.akka" %% "akka-http-experimental" % akkaV,
   "com.typesafe.scala-logging" %% "scala-logging" % scalaLogging,
   "com.typesafe.akka" %% "akka-testkit" % akkaV % "test",
-  "ch.qos.logback" % "logback-classic" % "1.1.3" % "test"
+  "ch.qos.logback" % "logback-classic" % logbackClassic % "test"
 )
 
 (testOptions in Test) += Tests.Argument(TestFrameworks.ScalaTest, "-h", "report/squbs-streamingpipeline")

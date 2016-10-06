@@ -27,7 +27,7 @@ def spray(v: String) = Seq(
   "io.spray" %% "spray-routing-shapeless2" % v,
   "io.spray" %% "spray-testkit" % v % "test",
   "io.spray" %% "spray-client" % v % "test",
-  "io.spray" %% "spray-json" % "1.3.2" % "test"
+  "io.spray" %% "spray-json" % sprayJson % "test"
 )
 
 (testOptions in Test) += Tests.Argument(TestFrameworks.ScalaTest, "-h", "report/squbs-unicomplex")

@@ -20,4 +20,5 @@ object Versions {
   val scalaLogging = "3.5.0"
   val logbackClassic = "1.1.3"
   val scalaTest = "2.2.1"
+  val sprayJson = "1.3.2"
 }

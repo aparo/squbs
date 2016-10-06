@@ -16,7 +16,7 @@ libraryDependencies ++= Seq(
   "io.spray" %% "spray-routing-shapeless2" % sprayV,
   "io.spray" %% "spray-testkit" % sprayV % "test",
   "io.spray" %% "spray-client"  % sprayV % "test",
-  "io.spray" %% "spray-json"    % "1.3.2" % "test",
+  "io.spray" %% "spray-json"    % sprayJson % "test",
   "ch.qos.logback" % "logback-classic" % logbackClassic % "test"
 )
 

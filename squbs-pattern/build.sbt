@@ -41,7 +41,7 @@ def sprayDependencies(v: String) = Seq(
   "io.spray" %% "spray-http" % v,
   "io.spray" %% "spray-httpx" % v,
   "io.spray" %% "spray-routing-shapeless2" % v,
-  "io.spray" %% "spray-json" % "1.3.2" % "test",
+  "io.spray" %% "spray-json" % sprayJson % "test",
   "io.spray" %% "spray-testkit" % v % "test",
   "io.spray" %% "spray-httpx" % v % "test"
 )

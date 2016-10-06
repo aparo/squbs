@@ -23,5 +23,9 @@ project/plugins/project/
 temp_*.xml
 .idea_modules/
 
+# ensime specific
+.ensime
+.ensime_cache/
+
 # travis-ci
 local.*

@@ -20,7 +20,7 @@ libraryDependencies ++= Seq(
   "io.spray" %% "spray-client"  % sprayV % "test",
   "io.spray" %% "spray-json"    % sprayJson % "test",
   "ch.qos.logback" % "logback-classic" % logbackClassic % "test",
-  "org.json4s" %% "json4s-jackson" % "3.3.0"
+  "org.json4s" %% "json4s-jackson" % json4s
 )
 
 (testOptions in Test) += Tests.Argument(TestFrameworks.ScalaTest, "-h", "report/squbs-unicomplex")

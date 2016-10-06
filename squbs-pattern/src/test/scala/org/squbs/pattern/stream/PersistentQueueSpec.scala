@@ -103,24 +103,25 @@ class PersistentQueueSpec extends FlatSpec with Matchers {
 
   it should "dequeue each entry as it enqueues, even if the stream is reopened" in {
 
-    val tempPath2 = Files.createTempDirectory("persistent_queue")
+    val tempPath = Files.createTempDirectory("persistent_queue")
 
-    val queue2 = new PersistentQueue[ByteString](QueueConfig(tempPath2.toFile))
+    val queue2 = new PersistentQueue[ByteString](QueueConfig(tempPath.toFile))
     for { i <- 1 to 700000 } {
       val element = ByteString(s"Hello $i")
       queue2.enqueue(element)
     }
     queue2.close()
 
-    val queue3 = new PersistentQueue[ByteString](QueueConfig(tempPath2.toFile))
+    val queue3 = new PersistentQueue[ByteString](QueueConfig(tempPath.toFile))
     for { i <- 1 to 500000 } {
       val element = ByteString(s"Hello $i")
       val elementOption = queue3.dequeue()
+      queue3.commit(0, elementOption.value.index)
       elementOption.value.entry shouldBe element
     }
     queue3.close()
 
-    val queue4 = new PersistentQueue[ByteString](QueueConfig(tempPath2.toFile))
+    val queue4 = new PersistentQueue[ByteString](QueueConfig(tempPath.toFile))
     for { i <- 700001 to 1000000 } {
       val element = ByteString(s"Hello $i")
       queue4.enqueue(element)
@@ -128,13 +129,15 @@ class PersistentQueueSpec extends FlatSpec with Matchers {
     // We only read 500000, so there should be 500000 left.
     queue4.close()
 
-    val queue5 = new PersistentQueue[ByteString](QueueConfig(tempPath2.toFile))
+    val queue5 = new PersistentQueue[ByteString](QueueConfig(tempPath.toFile))
     for { i <- 500001 to 1000000 } {
       val element = ByteString(s"Hello $i")
       val elementOption = queue5.dequeue()
+      queue5.commit(0, elementOption.value.index)
       elementOption.value.entry shouldBe element
     }
     queue5.close()
+    delete(tempPath.toFile)
   }
 
   it should "throw the appropriate exception if queue file cannot be created" in {

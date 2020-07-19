@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import scala.concurrent.duration._
 
 object Timeouts {
 
-  implicit val askTimeout = Timeout(30 seconds)
+  implicit val askTimeout = Timeout(30.seconds)
 
-  val awaitMax = 60 seconds
+  val awaitMax = 240.seconds
 }

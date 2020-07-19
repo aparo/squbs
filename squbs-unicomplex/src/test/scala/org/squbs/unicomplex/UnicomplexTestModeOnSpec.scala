@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 PayPal
+ * Copyright 2017 PayPal
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -59,12 +59,12 @@ class UnicomplexTestModeOnSpec extends TestKit(UnicomplexTestModeOnSpec.boot.act
 
   val portBindings = Await.result((Unicomplex(system).uniActor ? PortBindings).mapTo[Map[String, Int]], awaitMax)
 
-  override def afterAll() {
+  override def afterAll(): Unit = {
     Unicomplex(system).uniActor ! GracefulStop
   }
 
   "Unicomplex" should "let the system pick the port" in {
-    portBindings("default-listener") should not be(8080)
-    portBindings("default-listener") should not be(13000) // bind-port specified in src/test/resources/reference.conf
+    portBindings("default-listener") should not be 8080
+    portBindings("default-listener") should not be 13000 // bind-port specified in src/test/resources/reference.conf
   }
 }

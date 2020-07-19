@@ -1,19 +1,21 @@
 resolvers += "Typesafe Repository" at "https://repo.typesafe.com/typesafe/releases/"
 
-addSbtPlugin("io.get-coursier" % "sbt-coursier" % "1.0.0-M14-2")
+addSbtPlugin("org.scoverage" % "sbt-scoverage" % "1.6.0")
 
-addSbtPlugin("org.scoverage" % "sbt-scoverage" % "1.3.3")
+addSbtPlugin("com.codacy" % "sbt-codacy-coverage" % "1.3.15")
 
-addSbtPlugin("com.codacy" % "sbt-codacy-coverage" % "1.2.1")
+addSbtPlugin("org.scalastyle" %% "scalastyle-sbt-plugin" % "1.0.0")
 
-addSbtPlugin("org.scalastyle" %% "scalastyle-sbt-plugin" % "0.8.0")
+addSbtPlugin("io.spray" % "sbt-boilerplate" % "0.6.1")
 
-addSbtPlugin("io.spray" % "sbt-boilerplate" % "0.5.9")
+addSbtPlugin("com.github.gseitz" % "sbt-release" % "1.0.11")
 
-addSbtPlugin("com.github.gseitz" % "sbt-release" % "0.8.4")
+addSbtPlugin("com.jsuereth" % "sbt-pgp" % "1.1.2-1")
 
-addSbtPlugin("com.jsuereth" % "sbt-pgp" % "1.0.0")
+addSbtPlugin("io.spray" % "sbt-revolver" % "0.9.1")
 
-addSbtPlugin("io.spray" % "sbt-revolver" % "0.8.0")
+addSbtPlugin("de.johoop" % "sbt-testng-plugin" % "3.1.1")
 
-addSbtPlugin("de.johoop" % "sbt-testng-plugin" % "3.0.2")
+addSbtPlugin("net.virtual-void" % "sbt-dependency-graph" % "0.10.0-RC1")
+
+addSbtPlugin("com.timushev.sbt" % "sbt-updates" % "0.4.2")

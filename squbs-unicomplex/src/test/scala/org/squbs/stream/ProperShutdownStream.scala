@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -32,7 +32,6 @@ object ProperShutdownStream {
 
 class ProperShutdownStream extends PerpetualStream[(ActorRef, Future[Long])] {
   import ProperShutdownStream._
-  import context.system
   import org.squbs.unicomplex.Timeouts._
 
   override def stopTimeout = awaitMax

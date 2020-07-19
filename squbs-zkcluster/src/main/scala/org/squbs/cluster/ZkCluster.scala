@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -34,9 +34,10 @@ import org.apache.zookeeper.server.quorum.flexible.QuorumMaj
 import org.apache.zookeeper.{CreateMode, WatchedEvent}
 import org.squbs.cluster.rebalance.{DataCenterAwareRebalanceLogic, RebalanceLogic}
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import scala.language.implicitConversions
 import scala.util.Try
+import scala.util.control.NonFatal
 
 case class ZkCluster(zkAddress: Address,
                      initConnStr: String,
@@ -56,29 +57,31 @@ case class ZkCluster(zkAddress: Address,
   private[this] val stopped = new AtomicBoolean(false)
   private[this] val shutdownListeners = new ConcurrentLinkedQueue[(CuratorFramework => Unit)]()
 
-  private[this] val connectionStateListener: ConnectionStateListener = new ConnectionStateListener {
-    override def stateChanged(client: CuratorFramework, newState: ConnectionState): Unit = {
-      newState match {
-        case ConnectionState.LOST if !stopped.get =>
-          logger.error("[zkCluster] connection lost!")
-          system.eventStream.publish(ZkLost)
-          initialize()
-        case ConnectionState.CONNECTED if !stopped.get =>
-          logger.info("[zkCluster] connected send out the notification")
-          system.eventStream.publish(ZkConnected)
-          znodesSetup()(curatorFwkWithNs())
-          zkClusterActor ! ZkClientUpdated(curatorFwkWithNs())
-        case ConnectionState.SUSPENDED if !stopped.get =>
-          logger.info("[zkCluster] connection suspended suspended")
-          system.eventStream.publish(ZkSuspended)
-        case ConnectionState.RECONNECTED if !stopped.get =>
-          logger.info("[zkCluster] reconnected")
-          system.eventStream.publish(ZkReconnected)
-        case otherState =>
-          logger.warn(s"[zkCluster] connection state changed $otherState. What shall I do?")
+  private[this] val connectionStateListener: ConnectionStateListener =
+    new ConnectionStateListener {
+      override def stateChanged(client: CuratorFramework, newState: ConnectionState): Unit = {
+        newState match {
+          case ConnectionState.LOST if !stopped.get =>
+            logger.error("[zkCluster] connection lost!")
+            system.eventStream.publish(ZkLost)
+            initialize()
+          case ConnectionState.CONNECTED if !stopped.get =>
+            logger.info("[zkCluster] connected send out the notification")
+            system.eventStream.publish(ZkConnected)
+            znodesSetup()(curatorFwkWithNs())
+            zkClusterActor ! ZkClientUpdated(curatorFwkWithNs())
+          case ConnectionState.SUSPENDED if !stopped.get =>
+            logger.info("[zkCluster] connection suspended suspended")
+            system.eventStream.publish(ZkSuspended)
+          case ConnectionState.RECONNECTED if !stopped.get =>
+            logger.info("[zkCluster] reconnected")
+            system.eventStream.publish(ZkReconnected)
+          case otherState =>
+            logger.warn(s"[zkCluster] connection state changed $otherState. What shall I do?")
+        }
       }
     }
-  }
+
 
   private[this] def znodesSetup()(implicit curatorFwk: CuratorFramework) = {
     //make sure /leader, /members, /segments znodes are available
@@ -116,14 +119,14 @@ case class ZkCluster(zkAddress: Address,
       logger.warn("[ZkCluster] detected Zookeeper cluster config change {}", connStr)
     }
   } recover {
-    case e: Throwable => logger.error(e.getMessage)
+    case NonFatal(e) => logger.error(e.getMessage)
   }
 
   private implicit def bytesToConnectString(bytes: Array[Byte]): String = {
     val properties = new Properties
     properties.load(new ByteArrayInputStream(bytes))
     val newConfig = new QuorumMaj(properties)
-    newConfig.getAllMembers.values() map { server =>
+    newConfig.getAllMembers.values().asScala.map { server =>
       server.addr.getAddress.getHostAddress + ":" + server.clientAddr.getPort
     } mkString ","
   }
@@ -150,7 +153,7 @@ case class ZkCluster(zkAddress: Address,
     stopped set true
     val client = curatorFwk.get()
     client.getConnectionStateListenable.removeListener(connectionStateListener)
-    shutdownListeners foreach (_(curatorFwkWithNs()))
+    shutdownListeners.asScala.foreach (_(curatorFwkWithNs()))
     client.close()
   }
 }

@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -17,8 +17,9 @@
 package org.squbs.pattern.timeoutpolicy;
 
 import akka.actor.ActorSystem;
-import scala.concurrent.duration.FiniteDuration;
+import org.squbs.util.DurationConverters;
 
+import java.time.Duration;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -34,13 +35,13 @@ public class TimeoutPolicyJ {
     private final TimeoutPolicy sigmaTimeoutPolicy;
     private final TimeoutPolicy percentileTimeoutPolicy;
     // callable randomized duration between 50 ms to 150 ms
-    private Callable<FiniteDuration> timedCall = () -> {
+    private Callable<Duration> timedCall = () -> {
         // 100 ms +- 50 ms randomize offset
         int waitTime = (int) (Math.random() * 100 + 50);
         Thread.sleep(waitTime);
-        return new FiniteDuration(waitTime, MILLISECONDS);
+        return Duration.ofMillis(waitTime);
     };
-    private TimedFn<FiniteDuration> timedFn = (FiniteDuration t) -> {
+    private TimedFn<Duration> timedFn = (Duration t) -> {
         // offset 20 ms on top of what's set in the timeout policy
         // empirical policies will skew left due to timeout cut-off at the right-side tail
         // offset will allow the sigma to breathe for the future.get()
@@ -49,56 +50,56 @@ public class TimeoutPolicyJ {
 
     public TimeoutPolicyJ() {
         fixedTimeoutPolicy = TimeoutPolicyBuilder
-                .create(new FiniteDuration(INITIAL_TIMEOUT, MILLISECONDS), fromExecutorService(es))
+                .create(Duration.ofMillis(INITIAL_TIMEOUT), fromExecutorService(es))
                 .minSamples(1)
                 .rule(TimeoutPolicyType.FIXED)
                 .build();
         sigmaTimeoutPolicy = TimeoutPolicyBuilder
-                .create(new FiniteDuration(INITIAL_TIMEOUT, MILLISECONDS), system.dispatcher())
+                .create(Duration.ofMillis(INITIAL_TIMEOUT), system.dispatcher())
                 .minSamples(1)
                 .name("SIGMA")
                 .rule(3.0, TimeoutPolicyType.SIGMA)
                 .build();
         percentileTimeoutPolicy = TimeoutPolicyBuilder
-                .create(new FiniteDuration(INITIAL_TIMEOUT, MILLISECONDS), system.dispatcher())
+                .create(Duration.ofMillis(INITIAL_TIMEOUT), system.dispatcher())
                 .minSamples(1)
                 .name("PERCENTILE")
                 .rule(95, TimeoutPolicyType.PERCENTILE)
                 .build();
     }
 
-    public FiniteDuration invokeExecute(TimeoutPolicy policy) {
+    public Duration invokeExecute(TimeoutPolicy policy) {
         try {
             return policy.execute(timedFn);
         } catch (Exception e) {
             System.out.println(e);
         }
-        return policy.waitTime();
+        return DurationConverters.toJava(policy.waitTime());
     }
 
-    public FiniteDuration invokeExecuteClosure(TimeoutPolicy policy) {
+    public Duration invokeExecuteClosure(TimeoutPolicy policy) {
         try {
             // casting (TimedFn<FiniteDuration>) is not required by the compiler, but intelliJ needs it
-            return policy.execute((TimedFn<FiniteDuration>) (FiniteDuration t) -> {
+            return policy.execute((TimedFn<Duration>) (Duration t) -> {
                 return es.submit(timedCall).get(t.toMillis() + 20, MILLISECONDS);
             });
         } catch (Exception e) {
             System.out.println(e);
         }
-        return policy.waitTime();
+        return DurationConverters.toJava(policy.waitTime());
     }
 
-    public FiniteDuration invokeInline(TimeoutPolicy policy) {
+    public Duration invokeInline(TimeoutPolicy policy) {
         TimeoutPolicy.TimeoutTransaction tx = policy.transaction();
         try {
-            return timedFn.get(tx.waitTime());
+            return timedFn.get(DurationConverters.toJava(tx.waitTime()));
         } catch (Exception e) {
             System.out.println(e);
         } finally {
             tx.end();
         }
-        return policy.waitTime();
-    }
+        return DurationConverters.toJava(policy.waitTime());
+   }
 
     public TimeoutPolicy getFixedTimeoutPolicy() {
         return fixedTimeoutPolicy;

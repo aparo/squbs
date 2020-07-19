@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -21,8 +21,10 @@ import akka.testkit.{ImplicitSender, TestKit}
 import com.typesafe.config.ConfigFactory
 import org.scalatest._
 import org.squbs.lifecycle.GracefulStop
+import org.squbs.unicomplex.Timeouts._
 import org.squbs.unicomplex.dummyfailedextensions.{DummyFailedExtensionA, DummyFailedExtensionB}
-import Timeouts._
+import scala.collection.JavaConverters._
+
 
 object SystemStatusTest {
 
@@ -35,12 +37,10 @@ object SystemStatusTest {
 		"InitFailCube",
     "DummyFailedExtensions") map (dummyJarsDir + "/" + _)
 
-	import scala.collection.JavaConversions._
-
 	val mapConfig = ConfigFactory.parseMap(
 		Map(
 			"squbs.actorsystem-name" -> "SystemStatusTest",
-			"squbs." + JMX.prefixConfig -> Boolean.box(true)))
+			"squbs." + JMX.prefixConfig -> Boolean.box(true)).asJava)
 
   val boot = UnicomplexBoot(mapConfig)
     .createUsing {
@@ -55,7 +55,7 @@ class SystemStatusTest extends TestKit(SystemStatusTest.boot.actorSystem) with I
 	with WordSpecLike with Matchers with BeforeAndAfterAll
 	with SequentialNestedSuiteExecution {
 
-	override def beforeAll() {
+	override def beforeAll(): Unit = {
     awaitAssert({
       Unicomplex(system).uniActor ! ReportStatus
       receiveOne(awaitMax) match {
@@ -66,7 +66,7 @@ class SystemStatusTest extends TestKit(SystemStatusTest.boot.actorSystem) with I
     }, max = awaitMax)
 	}
 
-	override def afterAll() {
+	override def afterAll(): Unit = {
 		Unicomplex(system).uniActor ! GracefulStop
 	}
 
@@ -94,7 +94,7 @@ class SystemStatusTest extends TestKit(SystemStatusTest.boot.actorSystem) with I
 		}
 	}
 
-	"UniComplex" must {
+	"Unicomplex" must {
 
 		"get cube init reports" in {
 			Unicomplex(system).uniActor ! ReportStatus

@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -25,14 +25,13 @@ import akka.testkit.{ImplicitSender, TestKit}
 import com.typesafe.config.ConfigFactory
 import com.typesafe.scalalogging.LazyLogging
 import org.scalatest._
-import org.scalatest.concurrent.AsyncAssertions
+import org.scalatest.concurrent.Waiters
 import org.squbs.lifecycle.GracefulStop
 import org.squbs.unicomplex.JMX._
 import org.squbs.unicomplex.{JMX, Unicomplex, UnicomplexBoot}
-import spray.util.Utils
 
-import scala.concurrent.{Await, Future}
 import scala.concurrent.duration._
+import scala.concurrent.{Await, Future}
 import scala.language.postfixOps
 import scala.util.Try
 
@@ -46,7 +45,6 @@ object ActorMonitorSpec extends LazyLogging {
    "TestCube"
   ) map (dummyJarsDir + "/" + _)
 
-  val (_, port) = Utils.temporaryServerHostnameAndPort()
 
   val config = ConfigFactory.parseString(
     s"""
@@ -54,7 +52,7 @@ object ActorMonitorSpec extends LazyLogging {
        |  actorsystem-name = ActorMonitorSpec
        |  ${JMX.prefixConfig} = true
        |}
-       |default-listener.bind-port = $port
+       |default-listener.bind-port = 0
     """.stripMargin)
 
   val boot = UnicomplexBoot(config)
@@ -79,12 +77,12 @@ object ActorMonitorSpec extends LazyLogging {
 
 class ActorMonitorSpec extends TestKit(ActorMonitorSpec.boot.actorSystem) with ImplicitSender
                              with WordSpecLike with Matchers with BeforeAndAfterAll
-                             with AsyncAssertions with LazyLogging {
+                             with Waiters with LazyLogging {
 
   import org.squbs.testkit.Timeouts._
   import system.dispatcher
 
-  override def beforeAll() {
+  override def beforeAll(): Unit = {
     // Make sure all actors are indeed alive.
     val idFuture1 = (system.actorSelection("/user/TestCube/TestActor") ? Identify(None)).mapTo[ActorIdentity]
     val idFuture2 = (system.actorSelection("/user/TestCube/TestActorWithRoute") ? Identify(None)).mapTo[ActorIdentity]
@@ -99,7 +97,7 @@ class ActorMonitorSpec extends TestKit(ActorMonitorSpec.boot.actorSystem) with I
   }
 
 
-  override def afterAll() {
+  override def afterAll(): Unit = {
     Unicomplex(system).uniActor ! GracefulStop
   }
 
@@ -134,7 +132,7 @@ class ActorMonitorSpec extends TestKit(ActorMonitorSpec.boot.actorSystem) with I
           logger.warn("Did not register all relevant actors just yet. Refreshing...")
         }
         cfgBeanCount should be >= 11
-      }, max = awaitMax, interval = 2 seconds)
+      }, max = awaitMax, interval = 2.seconds)
     }
 
     "1.0) getMailBoxSize of unicomplex" in {

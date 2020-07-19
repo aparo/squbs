@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 package org.squbs.pattern.timeoutpolicy
 
 import java.lang.management.ManagementFactory
+import java.util.concurrent.TimeUnit
 
 import akka.agent.Agent
 import com.typesafe.scalalogging.LazyLogging
@@ -24,6 +25,7 @@ import com.typesafe.scalalogging.LazyLogging
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
 import scala.language.postfixOps
+import org.squbs.util.DurationConverters._
 
 /**
  *
@@ -92,7 +94,7 @@ abstract class TimeoutPolicy(name: Option[String], initial: FiniteDuration, star
 
   // API for java
   def execute[T](f: TimedFn[T]): T = {
-    execute((t: FiniteDuration) => f.get(t))
+    execute((t: FiniteDuration) => f.get(toJava(t)))
   }
 
   /**
@@ -116,11 +118,11 @@ abstract class TimeoutPolicy(name: Option[String], initial: FiniteDuration, star
     previous
   }
 
-  def reset() {
+  def reset(): Unit = {
     reset(newStartOverCount = 0)
   }
 
-  def reset(initial: Option[FiniteDuration]) {
+  def reset(initial: Option[FiniteDuration]): Unit = {
     reset(initial, 0)
   }
 
@@ -225,7 +227,7 @@ object TimeoutPolicy extends LazyLogging {
    * @return timeout policy
    */
   def apply(name: Option[String] = None, initial: FiniteDuration, rule: TimeoutRule = FixedTimeoutRule,
-            debug: FiniteDuration = 1000 seconds, minSamples: Int = 1000, startOverCount: Int = Int.MaxValue)
+            debug: FiniteDuration = 1000.seconds, minSamples: Int = 1000, startOverCount: Int = Int.MaxValue)
            (implicit ec: ExecutionContext): TimeoutPolicy = {
     require(initial != null, "initial is required")
     require(debug != null, "debug is required")
@@ -276,14 +278,14 @@ object TimeoutPolicy extends LazyLogging {
  * Java API
  */
 object TimeoutPolicyBuilder {
-  def create(initial: FiniteDuration, ec: ExecutionContext) =
-    TimeoutPolicyBuilder(initial = initial)(ec)
+  def create(initial: java.time.Duration, ec: ExecutionContext) =
+    TimeoutPolicyBuilder(initial = toScala(initial))(ec)
 }
 
 case class TimeoutPolicyBuilder(name: Option[String] = None,
                                 initial: FiniteDuration,
                                 rule: TimeoutRule = FixedTimeoutRule,
-                                debug: FiniteDuration = 1000 seconds,
+                                debug: FiniteDuration = 1000.seconds,
                                 minSamples: Int = 1000,
                                 startOverCount: Int = Int.MaxValue)
                                (implicit ec: ExecutionContext) {

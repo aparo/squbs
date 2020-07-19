@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -22,13 +22,12 @@ import javax.management.{Attribute, ObjectName}
 import akka.actor.{Actor, ActorRef}
 
 import scala.annotation.tailrec
-import scala.compat.java8.JProcedure0
 import scala.concurrent.duration._
 import scala.math._
 
 case class StartLoad(startTimeNs: Long, tps: Int, warmUp: FiniteDuration, steady: FiniteDuration)(submitFn: => Unit) {
-  def this(startTimeNs: Long, tps: Int, warmUp: FiniteDuration, steady: FiniteDuration, submitFn: JProcedure0) =
-    this(startTimeNs, tps, warmUp, steady){ submitFn() }
+  def this(startTimeNs: Long, tps: Int, warmUp: FiniteDuration, steady: FiniteDuration, submitFn: Runnable) =
+    this(startTimeNs, tps, warmUp, steady){ submitFn.run() }
   private[stress] def invokeOnce() = submitFn
 }
 
@@ -52,17 +51,17 @@ class LoadActor extends Actor {
     var steadyRequests = 0L
     var lastWakeUp = Long.MinValue
 
-    val minInterval = 50 milliseconds
-    val submitInterval = (1000000000 / tps) nanoseconds
+    val minInterval = 50.milliseconds
+    val submitInterval = (1000000000 / tps).nanoseconds
     val firingInterval = if (submitInterval < minInterval) minInterval else submitInterval
     val steadyStart = startTimeNs + warmUp.toNanos
     val endTime = startTimeNs + warmUp.toNanos + steady.toNanos
-    val firstFire = (startTimeNs + firingInterval.toNanos - System.nanoTime) nanoseconds
+    val firstFire = (startTimeNs + firingInterval.toNanos - System.nanoTime).nanoseconds
     val scheduler = context.system.scheduler.schedule(firstFire, firingInterval, self, Ping)
 
     var nextIntervalStart = firingInterval.toNanos + startTimeNs
 
-    def invoke() {
+    def invoke(): Unit = {
       val wakeUpTime = System.nanoTime()
       if (wakeUpTime >= endTime) {
         scheduler.cancel()
@@ -76,7 +75,7 @@ class LoadActor extends Actor {
         }
 
         @tailrec
-        def invoke(times: Int) {
+        def invoke(times: Int): Unit = {
           if (times > 0) {
             invokeOnce()
             invoke(times - 1)
@@ -120,7 +119,7 @@ class CPUStatsActor extends Actor {
     import startMessage._
 
     val cpu = new CPULoad
-    val firstFire = (startTimeNs + warmUp.toNanos - System.nanoTime()) nanoseconds
+    val firstFire = (startTimeNs + warmUp.toNanos - System.nanoTime()).nanoseconds
     val endTime = startTimeNs + warmUp.toNanos + steady.toNanos
     val scheduler = context.system.scheduler.schedule(firstFire, interval, self, Ping)
 

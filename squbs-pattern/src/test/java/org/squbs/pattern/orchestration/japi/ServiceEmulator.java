@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -17,18 +17,17 @@
 package org.squbs.pattern.orchestration.japi;
 
 import akka.actor.AbstractActor;
-import akka.japi.pf.ReceiveBuilder;
 
 import static org.squbs.pattern.orchestration.japi.Messages.*;
 
 public class ServiceEmulator extends AbstractActor {
 
-    public ServiceEmulator() {
-        receive(ReceiveBuilder.match(ServiceRequest.class, request ->
+    @Override
+    public Receive createReceive() {
+        return receiveBuilder().match(ServiceRequest.class, request ->
                 getContext().system().scheduler().scheduleOnce(request.delay, sender(),
                         new ServiceResponse(request.id), getContext().dispatcher(), self())
-        ).build());
-
+        ).build();
     }
 }
 

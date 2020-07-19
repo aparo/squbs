@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -70,7 +70,7 @@ abstract class ZkClusterMultiActorSystemTestKit(systemName: String)
 
   def shutdownCluster(): Unit = {
     zkClusterExts.foreach(ext => killSystem(ext._1))
-    system.shutdown()
+    system.terminate()
     Thread.sleep(timeout.toMillis / 10)
   }
 
@@ -80,7 +80,7 @@ abstract class ZkClusterMultiActorSystemTestKit(systemName: String)
     system.actorSelection(zkCluster.zkClusterActor.path.toStringWithAddress(zkCluster.zkAddress))
 
   def killSystem(sysName: String): Unit = {
-    zkClusterExts(sysName).addShutdownListener((_) => actorSystems(sysName).shutdown)
+    zkClusterExts(sysName).addShutdownListener((_) => actorSystems(sysName).terminate())
     zkClusterExts(sysName).zkClusterActor ! PoisonPill
     expectMsgType[Terminated](timeout)
     actorSystems -= sysName

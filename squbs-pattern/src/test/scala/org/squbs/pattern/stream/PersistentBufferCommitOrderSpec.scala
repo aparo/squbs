@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 PayPal
+ * Copyright 2017 PayPal
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ import scala.concurrent.Await
 
 class PersistentBufferCommitOrderSpec extends FlatSpec with Matchers with BeforeAndAfterAll with Eventually {
 
-  implicit val system = ActorSystem("PersistentBufferCommitOrderSpec")
+  implicit val system = ActorSystem("PersistentBufferCommitOrderSpec", PersistentBufferSpec.testConfig)
   implicit val mat = ActorMaterializer()
   implicit val serializer = QueueSerializer[Int]()
   import StreamSpecUtil._
@@ -38,10 +38,10 @@ class PersistentBufferCommitOrderSpec extends FlatSpec with Matchers with Before
   }
 
   it should "fail when an out of order commit is attempted and commit-order-policy = strict" in {
-    val util = new StreamSpecUtil[Int](autoCommit = false)
+    val util = new StreamSpecUtil[Int, Event[Int]]
     import util._
-    val buffer = new PersistentBuffer[Int](ConfigFactory.parseString("commit-order-policy = strict").withFallback(config))
-    val commit = buffer.commit[Int] // makes a dummy flow if autocommit is set to false
+    val buffer = PersistentBufferAtLeastOnce[Int](ConfigFactory.parseString("commit-order-policy = strict").withFallback(config))
+    val commit = buffer.commit[Int]
 
     val streamGraph = RunnableGraph.fromGraph(GraphDSL.create(flowCounter) { implicit builder =>
       sink =>
@@ -55,10 +55,10 @@ class PersistentBufferCommitOrderSpec extends FlatSpec with Matchers with Before
   }
 
   it should "not fail when an out of order commit is attempted and commit-order-policy = lenient" in {
-    val util = new StreamSpecUtil[Int](autoCommit = false)
+    val util = new StreamSpecUtil[Int, Event[Int]]
     import util._
-    val buffer = new PersistentBuffer[Int](ConfigFactory.parseString("commit-order-policy = lenient").withFallback(config))
-    val commit = buffer.commit[Int] // makes a dummy flow if autocommit is set to false
+    val buffer = PersistentBufferAtLeastOnce[Int](ConfigFactory.parseString("commit-order-policy = lenient").withFallback(config))
+    val commit = buffer.commit[Int]
 
     val streamGraph = RunnableGraph.fromGraph(GraphDSL.create(flowCounter) { implicit builder =>
       sink =>

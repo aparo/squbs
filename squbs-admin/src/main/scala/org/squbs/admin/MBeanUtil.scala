@@ -1,17 +1,17 @@
 /*
- *  Copyright 2015 PayPal
+ * Copyright 2017 PayPal
  *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *  http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package org.squbs.admin
@@ -25,7 +25,7 @@ import org.json4s.JsonAST._
 import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import scala.util.Try
 
 object MBeanUtil {
@@ -34,7 +34,7 @@ object MBeanUtil {
 
   def allObjectNames: List[String] = {
     val beans = server.queryMBeans(null, null)
-    beans.map { bean =>
+    beans.asScala.map { bean =>
       bean.getObjectName.toString
     } .toList.sorted
   }
@@ -103,7 +103,7 @@ object MBeanUtil {
     }
 
     private def toJObject(c: CompositeData) =
-      JObject(c.getCompositeType.keySet.toList.sorted collect {
+      JObject(c.getCompositeType.keySet.asScala.toList.sorted collect {
         case key if !(exclusions contains key) => key -> eval { c.get(key)}
       })
 

@@ -1,137 +1,112 @@
 /*
- *  Copyright 2015 PayPal
+ * Copyright 2017 PayPal
  *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *  http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package org.squbs.pipeline
 
-import akka.actor.{Actor, ActorSystem}
-import akka.testkit.{TestActorRef, TestKit}
+import akka.actor.ActorSystem
+import akka.http.scaladsl.model.headers.RawHeader
+import akka.http.scaladsl.model.{HttpRequest, HttpResponse}
+import akka.testkit.TestKit
+import org.scalatest.OptionValues._
 import org.scalatest.{BeforeAndAfterAll, FlatSpecLike, Matchers}
-import spray.http.HttpHeaders.RawHeader
-import spray.http._
+import scala.util.Try
 
-class RequestContextSpec extends TestKit(ActorSystem("RequestContextSpecSys")) with FlatSpecLike with Matchers with BeforeAndAfterAll {
+class RequestContextSpec
+  extends TestKit(ActorSystem("RequestContextSpecSys"))
+    with FlatSpecLike
+    with Matchers
+    with BeforeAndAfterAll {
 
-	override def afterAll() {
-		system.shutdown()
-	}
-
-  "RequestContext" should "handle attributes correctly" in {
-    val req = HttpRequest()
-    val ctx = RequestContext(req)
-
-    ctx.attributes.size should be(0)
-
-    val ctx1 = ctx +> ("key1" -> "value1")
-    ctx1.attribute("key1") should be(Some("value1"))
-
-    val ctx2 = ctx1 +> ("key2" -> 1) +> ("key3"-> new Exception("BadMan"))
-    ctx2.attribute("key2") should be(Some(1))
-    ctx2.attribute[Exception]("key3").get.getMessage should be("BadMan")
-    ctx2.attribute("key1") should be(Some("value1"))
-
-    val ctx3 = ctx2 -> ("key1", "key5")
-    ctx3.attributes.size should be(2)
-    ctx3.attribute("key2") should be(Some(1))
-    ctx3.attribute[Exception]("key3").get.getMessage should be("BadMan")
-
+  override def afterAll(): Unit = {
+    system.terminate()
   }
 
-  "RequestContext" should "handle headers correctly" in {
-    val ctx = RequestContext(HttpRequest())
+  it should "handle attributes correctly (withAttributes/removeAttributes/expanded variable args)" in {
+    val attributeAdditions =
+      List(
+        "key1" -> "val1",
+        "key2" -> 1,
+        "key3" -> new Exception("Bad Val")
+      )
 
-    val ctx1 = ctx.addRequestHeader(RawHeader("h11","v11"))
-    ctx1.request.headers.contains(RawHeader("h11","v11")) should be(true)
+    val rc1 = RequestContext(HttpRequest(), 0)
+    val rc2 = rc1.withAttributes(attributeAdditions:_*)
+    rc1.attributes should have size 0
+    rc2.attributes should equal(attributeAdditions.toMap)
 
-    val ctx2 = ctx.addRequestHeaders(RawHeader("h11","v11"), RawHeader("h22","v22"))
-    ctx2.request.headers.contains(RawHeader("h11","v11")) should be(true)
-    ctx2.request.headers.contains(RawHeader("h22","v22")) should be(true)
-
-    val ctx3 = ctx.copy(response = NormalResponse(HttpResponse())).addResponseHeader(RawHeader("h33","v33"))
-    NormalResponse.unapply(ctx3.response.asInstanceOf[NormalResponse]).get.headers.contains(RawHeader("h33","v33")) should be (true)
-
+    val addedKeys = attributeAdditions.map(_._1).toSet
+    val removeKeys = Set(addedKeys.head, addedKeys.last)
+    val rc3 = rc2.removeAttributes("ibetternotexist" +: removeKeys.toList:_*)
+    rc3.attributes.keys.toSet should equal(addedKeys -- removeKeys)
   }
 
-	"RequestContext" should "parse and wrap the request correctly" in {
-		val req = HttpRequest()
-		val ctx = RequestContext(req, isChunkedRequest = false, attributes = Map("aaa" -> "dummy", "ccc" -> null))
-		ctx.attribute[String]("aaa") shouldBe Some("dummy")
-		ctx.attribute[Int]("bbb") shouldBe None
-		ctx.attribute[String]("ccc") shouldBe None
+  it should "handle attributes correctly (withAttributes/variable args)" in {
+    val rc = RequestContext(HttpRequest(), 0)
 
-		ctx.payload shouldBe req
+    rc.withAttributes(
+      "key1" -> "val1",
+      "key2" -> 1
+    ).attributes should equal(Map("key1" -> "val1", "key2" -> 1))
 
-		val ctx1 = RequestContext(req, isChunkedRequest = true)
-		ctx1.payload shouldBe ChunkedRequestStart(req)
-	}
+    rc.attributes should have size 0
+  }
 
-	"ExceptionalResponse" should "correctly apply and parse the config" in {
-		val exp1 = ExceptionalResponse()
-		exp1.response shouldBe HttpResponse(status = StatusCodes.InternalServerError, entity = "Service Error!")
-		exp1.cause shouldBe None
-		exp1.original shouldBe None
+  it should "handle attributes correctly (withAttribute/removeAttribute)" in {
+    val rc1 = RequestContext(HttpRequest(), 0)
 
-		val dummyerr = new RuntimeException("dummy error")
-		val exp2 = ExceptionalResponse(dummyerr)
-		exp2.response shouldBe HttpResponse(status = StatusCodes.InternalServerError, entity = "dummy error")
-		exp2.cause shouldBe Some(dummyerr)
-		exp2.original shouldBe None
+    rc1.attributes should have size 0
 
-		val origin = NormalResponse(HttpResponse(StatusCodes.OK, entity = "hello world"))
-		val exp3 = ExceptionalResponse(dummyerr, Some(origin))
-		exp3.response shouldBe HttpResponse(status = StatusCodes.InternalServerError, entity = "dummy error")
-		exp3.cause shouldBe Some(dummyerr)
-		exp3.original shouldBe Some(origin)
-	}
+    val rc2 = rc1.withAttribute("key1", "val1")
+    rc1.attributes should have size 0 // Immutability
+    rc2.attribute("key1") should be(Some("val1"))
 
-	"NormalResponse" should "correctly apply and parse the config" in {
-		val resp = HttpResponse(StatusCodes.OK)
-		val resp1 = HttpResponse(StatusCodes.NotFound)
-		val n1 = NormalResponse(resp)
-		n1.data shouldBe resp
-		n1.responseMessage shouldBe resp
+    val rc3 = rc2.withAttribute("key2", 1).withAttribute("key3", new Exception("Bad Val"))
+    rc3.attribute("key2") should be(Some(1))
+    rc3.attribute[Exception]("key3").value.getMessage should be("Bad Val")
+    rc3.attribute("key1") should be(Some("val1"))
 
-		n1.update(resp1).data shouldBe resp1
-		NormalResponse.unapply(n1) shouldBe Some(resp)
+    rc3.attributes should have size 3
 
-		val n2 = NormalResponse(ChunkedResponseStart(resp))
-		n2.data shouldBe ChunkedResponseStart(resp)
-		n2.update(resp1).data shouldBe ChunkedResponseStart(resp1)
+    val rc4 = rc3.removeAttribute("key1")
+    rc3.attributes should have size 3 // Immutability
+    rc4.attributes should have size 2
 
-		n2.update(ChunkedResponseStart(resp1)).data shouldBe ChunkedResponseStart(resp1)
-		NormalResponse.unapply(n2) shouldBe Some(resp)
+    val rc5 = rc4.removeAttribute("notexists")
+    rc5.attributes should have size 2
+    rc5.attribute("key2") should be(Some(1))
+    rc5.attribute[Exception]("key3").value.getMessage should be("Bad Val")
+  }
 
-		val n3 = NormalResponse(MessageChunk("hellochunk"))
-		n3.data shouldBe MessageChunk("hellochunk")
+  it should "handle headers correctly" in {
+    val rc1 = RequestContext(HttpRequest(), 0)
+    val rc2 = rc1.withRequestHeader(RawHeader("key1", "val1"))
+    val rc3 = rc2.withRequestHeaders(RawHeader("key2", "val2"), RawHeader("key3", "val3"))
 
-		a [IllegalArgumentException] should be thrownBy n3.update(resp1)
-		NormalResponse.unapply(n3) shouldBe None
+    rc3.request.headers should have size 3
+    rc3.response should be(None)
+    rc3.request.headers should contain(RawHeader("key1", "val1"))
 
-		val n4 = NormalResponse(ChunkedMessageEnd("helloend"))
-		n4.data shouldBe ChunkedMessageEnd("helloend")
+    val rc4 = rc3.withResponse(Try(HttpResponse()))
+    rc4.response.value.get.headers should have size 0
+    val rc5 = rc4.withResponseHeader(RawHeader("key4", "val4"))
+    val rc6 = rc5.withResponseHeaders(RawHeader("key5", "val5"), RawHeader("key6", "val6"))
+    val rc7 = rc6.withResponseHeader(RawHeader("key7", "val7"))
+    rc7.request.headers should have size 3
+    rc7.response.value.get.headers should have size 4
+    rc7.response.value.get.headers should contain(RawHeader("key4", "val4"))
+  }
 
-		val actor = TestActorRef[ContextDummyActor]
-		val n5 = NormalResponse(Confirmed(resp, "OK"), actor)
-		n5.data shouldBe resp
-		n5.responseMessage shouldBe Confirmed(resp, AckInfo("OK", actor))
-		n5.update(resp1).data shouldBe resp1
-	}
-}
-
-class ContextDummyActor extends Actor {
-	override def receive = {
-		case any =>
-	}
 }

@@ -1,7 +1,7 @@
-#Unicomplex & Cube Bootstrapping
+# Unicomplex & Cube Bootstrapping
 
-squbs comes with a default bootstrap class `org.squbs.unicomplex.Bootstrap`. This can be started from IDEs, command line, sbt, or even Maven. Bootstrap scans the class loader and finds META-INF/squbs-meta.&lt;ext&gt; in each loaded jar resource.
-If squbs metadata is available, the jar resource is treated as squbs cube or extension and initialized according to the metadata declarations. The bootstrap then first initializes extensions, cubes, then service routes last regardless of
+squbs comes with a default bootstrap class `org.squbs.unicomplex.Bootstrap`. This can be started from IDEs, command line, sbt, or even Maven. Bootstrap scans the class path and finds META-INF/squbs-meta.&lt;ext&gt; in each loaded jar resource.
+If squbs metadata is available, the jar resource is treated as squbs cube or extension and initialized according to the metadata declarations. The bootstrap then first initializes extensions, cubes, then service handlers last regardless of
 their sequence in the classpath.
 
 Given normal circumstances, bootstrapping detail are of not much significance. However, one may need to programmatically bootstrap squbs in different ways. This is especially common in test cases needing custom configuration and needing to run in parallel. Please see [Testing](testing.md) for more information. The syntax for bootstrapping squbs is as follows:
@@ -57,7 +57,7 @@ timeouts, it can be set lower by passing the desired timeout as an argument to `
 `start(Timeout(5 seconds))` or in short `start(5 seconds)` using implicit conversions from duration to a timeout.
 
 
-#Configuration Resolution
+# Configuration Resolution
 
 squbs chooses one application configuration and merges it with the aggregated application.conf and reference.conf in the classpath. The application configuration being merged are chosen from the following order.
 
@@ -67,7 +67,7 @@ squbs chooses one application configuration and merges it with the aggregated ap
 
 3. Otherwise, the `application.conf` provided with the application, if any, will be used. This then falls back to the `reference.conf`.
 
-#Drop-in Modular System 
+# Drop-in Modular System 
 
 squbs divides applications into modules called cubes. Modules in squbs are intended to be run in modular isolation as
 well as on a flat classpath. Modular isolation is intended for true loose coupling of the modules, without incurring
@@ -75,7 +75,7 @@ any classpath conflicts due to the dependencies.
 
 The current implementation bootstraps from a flat classpath. On bootstrapping, squbs will automatically detect the modules by classpath scanning. Scanned cubes are detected and started automatically.
 
-##Cube Jars
+## Cube Jars
 
 All cubes are represented by a top-level jar file with the cube logic itself. All cubes must have the cube metadata
 residing in META-INF/squbs-meta.&lt;ext&gt;. Supported extensions are .conf, .json, and .properties. The format follows the
@@ -90,11 +90,11 @@ the followings:
 
 *Extension*: Identifies a squbs framework extension. The extension entry point has to extend from `org.squbs.lifecycle.ExtensionLifecycle` trait.
     
-##Configuration Resolution
+## Configuration Resolution
 
 Providing `application.conf` for a cube may cause issues when multiple cubes try to provide their internal `application.conf`. The precedence rules for merging such configuration is undefined. It is recommended cubes only provide a `reference.conf` and can be overridden by an external `application.conf` for deployment.
 
-##Well Known Actors
+## Well Known Actors
 
 Well known actors are just [Akka actors](http://doc.akka.io/docs/akka/2.3.13/scala/actors.html) as defined by the
 [Akka documentation](http://doc.akka.io/docs/akka/2.3.13/scala.html). They are started by a supervisor actor that is created for each cube. The supervisor carries the name of the cube. Therefore any well known actor has a path of
@@ -134,7 +134,7 @@ akka.actor.deployment {
 
   # Router configuration
   /bottlecube/lyrics {
-    router = round-robin
+    router = round-robin-pool
     resizer {
       lower-bound = 1
       upper-bound = 10
@@ -151,18 +151,9 @@ akka.actor.deployment {
 Router concepts, examples, and configuration, are documented in the
 [Akka documentation](http://doc.akka.io/docs/akka/2.3.13/scala/routing.html).
 
-##Services
+## Services
 
-Each service entry point is bound to a unique web context which is the leading path segments separated by the `/` character. For instance, the url `http://mysite.com/my-context/index` would match the context `"my-context"`, if registered. It can also match the root context if `"my-context"` is not registered. Web contexts are not necessarily the first slash-separated segment of the path. Dependent on the context registration, it may match multiple such segments. A concrete example would be a URL with service versioning. The URL `http://mysite.com/my-context/v2/index` may have either `my-context` or `my-context/v2` as the web context, depending on what contexts are registered. If both `my-context` and `my-context/v2` are registered, the longest match - in this case `my-context/v2` will be used for routing the request.
-
-Service implementations can have two flavors:
-
-1. A spray-can style server request handler actor as documented at [http://spray.io/documentation/1.2.3/spray-can/http-server/](http://spray.io/documentation/1.2.3/spray-can/http-server/). The actor handles all but the `Connected` message and must not take any constructor arguments. The whole request or request part is passed on to this actor unchanged.
-
-2. A spray-routing style route definition. These are classes extending from the `org.squbs.unicomplex.RouteDefinition` trait, must not take any constructor arguments (zero-argument constructor) and have to provide the route member which is a Spray route according to the
-   [spray-routing documentation](http://spray.io/documentation/1.2.3/spray-routing/key-concepts/routes/). In contrast to the actor implementation, the path matching of the route matches the path **AFTER** the registered web context. For instance, a route definition registered under the web context `"my-context"` would match `/segment1/segment2` for the url `http://mysite.com/my-context/segment1/segment2` not including the web context string itself.
-      
-Service metadata is declared in META-INF/squbs-meta.conf as shown in the following example.
+Services are described in full detail in [Implementing HTTP(S) Services](http-services.md). Service metadata is declared in `META-INF/squbs-meta.conf` as shown in the following example:
 
 ```
 cube-name = org.squbs.bottlesvc
@@ -175,8 +166,11 @@ squbs-services = [
     # The listeners entry is optional, and defaults to 'default-listener'.
     listeners = [ default-listener, my-listener ]
     
-    # Optional, defaults to a default proxy. Specify "" for no proxy.
-    proxy-name = some-proxy                
+    # Optional, defaults to a default pipeline.
+    pipeline = some-pipeline
+    
+    # Optional, disables the default pipeline if set to off.  If missing, it is set to on.
+    defaultPipeline = on
     
     # Optional, only applies to actors.
     init-required = false
@@ -184,51 +178,9 @@ squbs-services = [
 ]
 ```
 
-The class-name parameter identifies either the actor or route class.
+Please see [Service Registration](http-services.md#service-registration) for a full description.
 
-The web-context is a string that uniquely identifies the web context of a request to be dispatched to this service. It **MUST NOT** start with a `/` character. It can have `/` characters inside as segment separators in case of multi-segment contexts. And it is allowed to be `""` for root context. If multiple services match the request, the longest context match takes precedence.
-
-Optionally, the listeners parameter declares a list of listeners to bind this service. Listener binding is discussed in the following section, below.
-
-A proxy is a pipelined request pre-processor before the request gets processed by the route. The proxy name can be specified by a `proxy-name` parameter. Unless `""` is specified, a default proxy will be used. Please refer to [Request/Response Pipeline Proxy](pipeline.md) for more information.
-
-Only actors can have another optional `init-required` parameter which allows the actor to feed back its state to the system. Please refer to the [Startup Hooks](lifecycle.md#startup-hooks) section of the [Runtime Lifecycles & API](lifecycle.md) documentation for a full discussion of startup/initialization hooks.
-
-
-### Listener Binding
-
-A listener is declared in `application.conf` or `reference.conf` usually living in the project's `src/main/resources` directory. Listeners declare interfaces, ports, and security attributes, and name aliases, and are explained in [Configuration](configuration.md)
-
-A service route attaches itself to one or more listeners. The `listeners` attribute is a list of listeners or aliases the route should bind to. If listeners are not defined, it will default to the `default-listener`.
-
-The wildcard value `"*"` (note, it has to be quoted or will not be properly be interpreted) is a special case which translates to attaching this route to all active listeners. By itself, if will however not activate any listener if it is not already activated by a concrete attachment of a route. If the route should activate the default listener and attach to any other listener activated by other routes, the concrete attachment has to be specified separately as follows:
-
-```
-    listeners = [ default-listener, "*" ]
-```
-
-### Runtime Access to Web Context
-While the web context is configured in metadata, both the route and the actor will sometimes need to know what web context it is serving. To do so, any service class (route or actor) may want to mix in the `org.squbs.unicomplex.WebContext` trait. Doing so will add the following field to your object
-
-```
-    val webContext: String
-```
-
-The webContext field is initialized to the value of the configured web context as set in Metadata upon construction of the object as shown below:
-
-```
-class MySvcActor extends Actor with WebContext {
-  def receive = {
-    case HttpRequest(HttpMethods.GET, Uri.Path(p), _, _, _)
-        if p.startsWith(s"/$webContext") =>
-      // handle request...
-  }
-}
-```
-
-The `webContext` field will automatically be made available to this class
-
-##Extensions
+## Extensions
 
 Extensions for squbs are low level facilities that need to be started for the environment. The extension initializer
 has to extend from the `org.squbs.lifecycle.ExtensionLifecycle` trait and override the proper callbacks. An extension
@@ -241,11 +193,11 @@ in the extension declaration. If the sequence is not specified, it defaults to I
 after all extensions that provide a sequence number. If there is more than one extension not specifying the sequence or specifying the same sequence number,
 the order between starting these is indeterministic. The shutdown order is the reverse of the startup order.
 
-#Shutting Down squbs
+# Shutting Down squbs
 
 The squbs runtime can be properly shutdown by sending the `Unicomplex()` a `GracefulStop` message. 
  
-The default startup main method, `org.squbs.unicomplex.Bootstrap`, registers a JVM shutdown hook that sends a `GracefulStop` message to `Unicomplex`.  Accodingly, if a squbs app is started by using the default main method, the system will be shutdown gracefully when JVM receives a `SIGTERM`.  
+The default startup main method, `org.squbs.unicomplex.Bootstrap`, registers a JVM shutdown hook that sends a `GracefulStop` message to `Unicomplex`.  Accordingly, if a squbs app is started by using the default main method, the system will be shutdown gracefully when JVM receives a `SIGTERM`.  
 
 If some other monitor process is responsible for shutting down the app, e.g. JSW, `org.squbs.unicomplex.Shutdown` can be set as the main method to gracefully shutdown the system.  This `Shutdown` main method sends a `GracefulStop` message to `Unicomplex` as well.
 

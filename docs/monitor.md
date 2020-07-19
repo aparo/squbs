@@ -1,6 +1,6 @@
-#Monitoring Actors at Runtime
+# Monitoring Actors at Runtime
 
-##Overview
+## Overview
 
 The squbs-actormonitor module attaches monitoring to each actor in the actor system. For large number of actors, this can get intrusive. The number of actors to monitor can be configured through `application.conf`. Use judgement attaching this module in production. There is no user API to this module.
 
@@ -42,11 +42,11 @@ squbs-actormonitor = {
 A JMX Bean `org.squbs.unicomplex:type=ActorMonitor` exposes the configuration of Actor Monitor. The JMX Bean is read-only.
 
 ```
- trait ActorMonitorConfigMXBean {
+trait ActorMonitorConfigMXBean {
   def getCount : Int				//Count of JMX bean has been created 
   def getMaxCount: Int				//Maximum JMX bean can be created
   def getMaxChildrenDisplay: Int		//Per each actor, maximum children can be exposed 
- }
- ```
+}
+```
  
 

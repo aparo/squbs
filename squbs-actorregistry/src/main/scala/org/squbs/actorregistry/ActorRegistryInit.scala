@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import akka.actor._
 import com.typesafe.config.Config
 import com.typesafe.scalalogging.LazyLogging
 import org.squbs.lifecycle.ExtensionLifecycle
-import org.squbs.unicomplex.ConfigUtil
+import org.squbs.util.ConfigUtil
 import org.squbs.unicomplex.UnicomplexBoot.StartupType
 
 import scala.concurrent.duration._
@@ -29,7 +29,7 @@ import scala.concurrent.duration._
 
 private class ActorRegistryInit extends ExtensionLifecycle with LazyLogging {
 
-  override def postInit() {
+  override def postInit(): Unit = {
     logger.info(s"postInit ${this.getClass}")
 
     import ConfigUtil._

@@ -1,28 +1,28 @@
 /*
- *  Copyright 2015 PayPal
+ * Copyright 2017 PayPal
  *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *  http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package org.squbs.admin
 
-import org.json4s.JsonAST.{JString, JObject}
+import java.net.URLEncoder
+
+import akka.http.scaladsl.model.Uri.Path
+import akka.http.scaladsl.model._
+import org.json4s.JsonAST.{JObject, JString}
 import org.json4s.jackson.JsonMethods._
-import org.squbs.unicomplex.{ConfigUtil, RouteDefinition, WebContext}
-import spray.http.{StatusCodes, HttpResponse}
-import spray.http.MediaTypes._
-import spray.http.Uri.Path
-import spray.routing.Directives._
-import ConfigUtil._
+import org.squbs.unicomplex.{RouteDefinition, WebContext}
+import org.squbs.util.ConfigUtil._
 
 class AdminSvc extends RouteDefinition with WebContext {
 
@@ -40,30 +40,26 @@ class AdminSvc extends RouteDefinition with WebContext {
   val route =
     get {
       pathEndOrSingleSlash {
-        respondWithMediaType(`application/json`) {
-          requestUri { uri =>
-            complete {
-              val kv = MBeanUtil.allObjectNames collect {
-                case name if !(exBeans contains name) =>
-                  val resource = Path(s"$prefix/${name.replace('=', '~')}")
-                  name -> JString(uri.withPath(resource).toString())
-              }
-              pretty(render(JObject(kv)))
+        extractUri { uri =>
+          complete {
+            val kv = MBeanUtil.allObjectNames collect {
+              case name if !(exBeans contains name) =>
+                val resource = Path(s"$prefix/${URLEncoder.encode(name.replace('=', '~'), "UTF-8")}")
+                name -> JString(uri.withPath(resource).toString())
             }
+            HttpResponse(entity = HttpEntity(ContentTypes.`application/json`, pretty(render(JObject(kv)))))
           }
         }
       } ~
       path("bean" / Segment) { encName =>
-        respondWithMediaType(`application/json`) {
-          complete {
-            val name = encName.replace('~', '=').replace('%', '/')
-            val response: HttpResponse =
-              if (exBeans contains name) HttpResponse(StatusCodes.NotFound, StatusCodes.NotFound.defaultMessage)
-              else MBeanUtil.asJSON(name, exFields getOrElse (name, Set.empty[String]))
-                .map { json => HttpResponse(entity = json) }
-                .getOrElse (HttpResponse(StatusCodes.NotFound, StatusCodes.NotFound.defaultMessage))
-            response
-          }
+        complete {
+          val name = encName.replace('~', '=').replace('%', '/')
+          val response: HttpResponse =
+            if (exBeans contains name) HttpResponse(StatusCodes.NotFound, entity = StatusCodes.NotFound.defaultMessage)
+            else MBeanUtil.asJSON(name, exFields getOrElse (name, Set.empty))
+              .map { json => HttpResponse(entity = json) }
+              .getOrElse (HttpResponse(StatusCodes.NotFound, entity = StatusCodes.NotFound.defaultMessage))
+          response
         }
       }
     }

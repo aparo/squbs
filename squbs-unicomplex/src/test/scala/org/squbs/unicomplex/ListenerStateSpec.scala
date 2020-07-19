@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 PayPal
+ * Copyright 2017 PayPal
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,21 +20,19 @@ import javax.management.ObjectName
 import javax.management.openmbean.CompositeData
 
 import akka.actor.ActorSystem
+import akka.http.scaladsl.model.StatusCodes
+import akka.http.scaladsl.server.{Directives, Route}
 import akka.testkit.TestKit
 import com.typesafe.config.ConfigFactory
-import org.scalatest.{BeforeAndAfterAll, Matchers, FlatSpecLike}
+import org.scalatest.{BeforeAndAfterAll, FlatSpecLike, Matchers}
 import org.squbs.lifecycle.GracefulStop
 import org.squbs.unicomplex.JMX._
-import spray.http.StatusCodes
-import spray.routing._
-import spray.util.Utils
 
 object ListenerStateSpec{
 
   val classPaths = Array(getClass.getClassLoader.getResource("classpaths/ListenerState").getPath)
 
-  val (_, port) = Utils.temporaryServerHostnameAndPort()
-  val (_, port2) = Utils.temporaryServerHostnameAndPort()
+  val (_, _, port) = temporaryServerHostnameAndPort()
 
   val config = ConfigFactory.parseString(
     s"""
@@ -78,7 +76,7 @@ object ListenerStateSpec{
        |  full-address = false
        |
        |  # Service bind to particular port. 8080 is the default.
-       |  bind-port = $port2
+       |  bind-port = 0
        |
        |  # Listener uses HTTPS?
        |  secure = true
@@ -101,7 +99,7 @@ object ListenerStateSpec{
 class ListenerStateSpec extends TestKit(ListenerStateSpec.boot.actorSystem) with FlatSpecLike
   with Matchers with BeforeAndAfterAll {
 
-  override def afterAll() {
+  override def afterAll(): Unit = {
     Unicomplex(system).uniActor ! GracefulStop
   }
 
@@ -109,7 +107,7 @@ class ListenerStateSpec extends TestKit(ListenerStateSpec.boot.actorSystem) with
     val listenerStates = JMX.get(new ObjectName(prefix(system) + listenerStateName), "ListenerStates")
       .asInstanceOf[Array[CompositeData]]
 
-    listenerStates.size should be (3)
+    listenerStates should have length 3
 
     val defaultListener = listenerStates.find(_.get("listener") == "default-listener").get
     val portConflictListener = listenerStates.find(_.get("listener") == "port-conflict-listener").get
@@ -117,7 +115,7 @@ class ListenerStateSpec extends TestKit(ListenerStateSpec.boot.actorSystem) with
 
     defaultListener.get("state") should be("Success")
     portConflictListener.get("state") should be("Failed")
-    portConflictListener.get("error").asInstanceOf[String] should startWith("java.net.BindException")
+    portConflictListener.get("error").asInstanceOf[String] should endWith("Bind failed because of java.net.BindException: Address already in use")
     sslContextNotExistListener.get("state") should be("Failed")
     sslContextNotExistListener.get("error").asInstanceOf[String] should startWith("java.lang.ClassNotFoundException: org.squbs.unicomplex.IDoNotExist")
   }

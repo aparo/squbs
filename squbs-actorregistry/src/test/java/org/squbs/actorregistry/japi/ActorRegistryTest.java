@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -22,7 +22,6 @@ import akka.actor.PoisonPill;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
 import org.junit.AfterClass;
-import org.junit.BeforeClass;
 import org.junit.Test;
 import org.squbs.actorregistry.ActorNotFound;
 import org.squbs.actorregistry.ActorRegistryBean;
@@ -33,52 +32,61 @@ import org.squbs.testkit.japi.CustomTestKit;
 import org.squbs.testkit.japi.DebugTimingTestKit;
 import org.squbs.unicomplex.JMX;
 import org.squbs.unicomplex.UnicomplexBoot;
-import scala.concurrent.Await;
-import scala.concurrent.Future;
 
 import javax.management.MalformedObjectNameException;
 import javax.management.ObjectName;
-import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.net.URL;
 import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
 
 import static org.junit.Assert.*;
-import static org.squbs.testkit.Timeouts.*;
+import static org.squbs.testkit.Timeouts.askTimeout;
+import static org.squbs.testkit.Timeouts.awaitMax;
 
-public class ActorRegistryTest {
+public class ActorRegistryTest extends CustomTestKit {
 
-    private static CustomTestKit testKit;
-    private static ActorLookup<?> lookup;
-    private static UnicomplexBoot boot;
+    private static final String[] resources;
 
-    @BeforeClass
-    public static void beforeAll() throws IOException {
-        String dummyJarsDir = Optional.ofNullable(ActorRegistryTest.class.getClassLoader().getResource("classpaths"))
-                .map(URL::getPath).orElseGet(() -> "");
-        String[] dummyCubes = {"ActorRegistryCube", "TestCube"};
-        String[] classPaths = Arrays.stream(dummyCubes).map(cp -> dummyJarsDir + "/" + cp).toArray(String[]::new);
-        Map<String, Object> configMap = new HashMap<>();
-        configMap.put("squbs.actorsystem-name", "ActorRegistryTest");
-        configMap.put("squbs.prefix-jmx-name", Boolean.TRUE);
-        Config testConfig = ConfigFactory.parseMap(configMap);
-        boot = UnicomplexBoot.apply(testConfig)
-                .scanComponents(classPaths).initExtensions().start();
-        testKit = new CustomTestKit(boot);
-        lookup = ActorLookup.create(testKit.actorSystem());
+    static {
+        final String dummyJarsDir = Optional.ofNullable(ActorRegistryTest.class.getClassLoader()
+                .getResource("classpaths")).map(URL::getPath).orElse("");
+        final String[] dummyCubes = {"ActorRegistryCube", "TestCube"};
+        resources = Arrays.stream(dummyCubes).map(cp ->
+                dummyJarsDir + "/" + cp + "/META-INF/squbs-meta.conf").toArray(String[]::new);
+    }
+
+    private static CustomTestKit instance;
+    private final ActorLookup<?> lookup;
+
+    private static UnicomplexBoot start() {
+        if (instance == null) {
+            Config testConfig = ConfigFactory.parseString(
+                    "squbs.actorsystem-name = ActorRegistryCube\n" +
+                    "squbs.prefix-jmx-name = true\n"
+            );
+            return UnicomplexBoot.apply(testConfig).scanResources(false, resources).initExtensions().start();
+        } else {
+            return instance.boot();
+        }
+    }
+
+    public ActorRegistryTest() {
+        super(start());
+        instance = this;
+        lookup = ActorLookup.create(system());
     }
 
     @AfterClass
-    public static void afterAll() {
-        testKit.shutdown();
+    public static void tearDown() {
+        instance.shutdown();
     }
 
     @Test
     public void testSimpleTell() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
+        new DebugTimingTestKit(system()) {{
                 lookup.tell(new TestRequest("ActorLookup"), getRef());
                 assertEquals(new TestResponse("ActorLookup"), receiveOne(awaitMax()));
         }};
@@ -86,11 +94,11 @@ public class ActorRegistryTest {
 
     @Test
     public void testSimpleAsk() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
-            Future<?> future = lookup.ask(new TestRequest("ActorLookup"), askTimeout());
+        new DebugTimingTestKit(system()) {{
+            CompletionStage<?> stage = lookup.ask(new TestRequest("ActorLookup"), askTimeout());
+
             try {
-                Object result = Await.result(future, awaitMax());
-                assertEquals(new TestResponse("ActorLookup"), result);
+                assertEquals(new TestResponse("ActorLookup"), stage.toCompletableFuture().get());
             } catch (Exception e) {
                 fail("Awaiting for response");
             }
@@ -100,31 +108,37 @@ public class ActorRegistryTest {
     @Test
     public void testSimpleAskWithMsTimeout() {
         long timeout = askTimeout().duration().toMillis();
-        new DebugTimingTestKit(testKit.actorSystem()) {{
-            Future<?> future = lookup.ask(new TestRequest("ActorLookup"), timeout);
+        new DebugTimingTestKit(system()) {{
+            CompletionStage<?> stage = lookup.ask(new TestRequest("ActorLookup"), timeout);
+
             try {
-                Object result = Await.result(future, awaitMax());
-                assertEquals(new TestResponse("ActorLookup"), result);
+                assertEquals(new TestResponse("ActorLookup"), stage.toCompletableFuture().get());
             } catch (Exception e) {
                 fail("Awaiting for response");
             }
         }};
     }
 
-    @Test(expected = ActorNotFound.class)
-    public void testResolveOne() throws Exception {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
-            Future<ActorRef> future = lookup.resolveOne(askTimeout().duration());
-            Await.result(future, awaitMax());
+    @Test
+    public void testResolveOne() {
+        new DebugTimingTestKit(system()) {{
+            try {
+                CompletionStage<ActorRef> future = lookup.resolveOne(askTimeout().duration());
+                future.toCompletableFuture().get();
+                fail("Expecting an ExecutionException");
+            } catch (Exception e) {
+                assertEquals(ExecutionException.class, e.getClass());
+                assertEquals(ActorNotFound.class, e.getCause().getClass());
+            }
         }};
     }
 
     @Test
     public void testResolveOneByName() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
-            Future<ActorRef> future = lookup.lookup("TestActor").resolveOne(askTimeout().duration());
+        new DebugTimingTestKit(system()) {{
+            CompletionStage<ActorRef> future = lookup.lookup("TestActor").resolveOne(askTimeout().duration());
             try {
-                ActorRef actorRef = Await.result(future, awaitMax());
+                ActorRef actorRef = future.toCompletableFuture().get();
                 assertEquals("TestActor", actorRef.path().name());
             } catch (Exception e) {
                 fail("Awaiting for response");
@@ -134,11 +148,11 @@ public class ActorRegistryTest {
 
     @Test
     public void testResolveOneByRequestType() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
-            Future<ActorRef> future = lookup.lookup(Optional.empty(), Optional.of(TestRequest.class),
+        new DebugTimingTestKit(system()) {{
+            CompletionStage<ActorRef> future = lookup.lookup(Optional.empty(), Optional.of(TestRequest.class),
                     Object.class).resolveOne(askTimeout().duration());
             try {
-                ActorRef actorRef = Await.result(future, awaitMax());
+                ActorRef actorRef = future.toCompletableFuture().get();
                 assertEquals("TestActor", actorRef.path().name());
             } catch (Exception e) {
                 fail("Awaiting for response");
@@ -148,10 +162,10 @@ public class ActorRegistryTest {
 
     @Test
     public void testResolveOneByType() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
-            Future<ActorRef> future = lookup.lookup(TestResponse.class).resolveOne(askTimeout().duration());
+        new DebugTimingTestKit(system()) {{
+            CompletionStage<ActorRef> future = lookup.lookup(TestResponse.class).resolveOne(askTimeout().duration());
             try {
-                ActorRef actorRef = Await.result(future, awaitMax());
+                ActorRef actorRef = future.toCompletableFuture().get();
                 assertEquals("TestActor", actorRef.path().name());
             } catch (Exception e) {
                 fail("Awaiting for response");
@@ -161,7 +175,7 @@ public class ActorRegistryTest {
 
     @Test
     public void testTellByType() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
+        new DebugTimingTestKit(system()) {{
             lookup.lookup(TestResponse.class).tell(new TestRequest("ActorLookup[TestResponse]"), getRef());
             assertEquals(new TestResponse("ActorLookup[TestResponse]"), receiveOne(awaitMax()));
         }};
@@ -169,12 +183,11 @@ public class ActorRegistryTest {
 
     @Test
     public void testAskByType() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
-            Future<TestResponse> future = lookup.lookup(TestResponse.class)
+        new DebugTimingTestKit(system()) {{
+            CompletionStage<TestResponse> stage = lookup.lookup(TestResponse.class)
                     .ask(new TestRequest("ActorLookup[TestResponse]"), askTimeout());
             try {
-                TestResponse result = Await.result(future, awaitMax());
-                assertEquals(new TestResponse("ActorLookup[TestResponse]"), result);
+                assertEquals(new TestResponse("ActorLookup[TestResponse]"), stage.toCompletableFuture().get());
             } catch (Exception e) {
                 fail("Awaiting for response");
             }
@@ -183,7 +196,7 @@ public class ActorRegistryTest {
 
     @Test
     public void testTellByName() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
+        new DebugTimingTestKit(system()) {{
             lookup.lookup("TestActor").tell(new TestRequest("ActorLookup[TestResponse]"), getRef());
             assertEquals(new TestResponse("ActorLookup[TestResponse]"), receiveOne(awaitMax()));
         }};
@@ -191,12 +204,11 @@ public class ActorRegistryTest {
 
     @Test
     public void testAskByName() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
-            Future<?> future = lookup.lookup("TestActor")
+        new DebugTimingTestKit(system()) {{
+            CompletionStage<?> stage = lookup.lookup("TestActor")
                     .ask(new TestRequest("ActorLookup[TestResponse]"), askTimeout());
             try {
-                Object result = Await.result(future, awaitMax());
-                assertEquals(new TestResponse("ActorLookup[TestResponse]"), result);
+                assertEquals(new TestResponse("ActorLookup[TestResponse]"), stage.toCompletableFuture().get());
             } catch (Exception e) {
                 fail("Awaiting for response");
             }
@@ -205,7 +217,7 @@ public class ActorRegistryTest {
 
     @Test
     public void testTellByOptionalName() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
+        new DebugTimingTestKit(system()) {{
             lookup.lookup(Optional.of("TestActor")).tell(new TestRequest("ActorLookup[TestResponse]"), getRef());
             assertEquals(new TestResponse("ActorLookup[TestResponse]"), receiveOne(awaitMax()));
         }};
@@ -213,12 +225,11 @@ public class ActorRegistryTest {
 
     @Test
     public void testAskOptionalName() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
-            Future<?> future = lookup.lookup(Optional.of("TestActor"))
+        new DebugTimingTestKit(system()) {{
+            CompletionStage<?> stage = lookup.lookup(Optional.of("TestActor"))
                     .ask(new TestRequest("ActorLookup[TestResponse]"), askTimeout());
             try {
-                Object result = Await.result(future, awaitMax());
-                assertEquals(new TestResponse("ActorLookup[TestResponse]"), result);
+                assertEquals(new TestResponse("ActorLookup[TestResponse]"), stage.toCompletableFuture().get());
             } catch (Exception e) {
                 fail("Awaiting for response");
             }
@@ -228,7 +239,7 @@ public class ActorRegistryTest {
 
     @Test
     public void testTellByTypeAndName() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
+        new DebugTimingTestKit(system()) {{
             lookup.lookup("TestActor", TestResponse.class)
                     .tell(new TestRequest("ActorLookup[TestResponse]('TestActor')"), getRef());
             assertEquals(new TestResponse("ActorLookup[TestResponse]('TestActor')"), receiveOne(awaitMax()));
@@ -237,12 +248,12 @@ public class ActorRegistryTest {
 
     @Test
     public void testAskByTypeAndName() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
-            Future<TestResponse> future = lookup.lookup("TestActor", TestResponse.class)
+        new DebugTimingTestKit(system()) {{
+            CompletionStage<TestResponse> stage = lookup.lookup("TestActor", TestResponse.class)
                     .ask(new TestRequest("ActorLookup[TestResponse]('TestActor')"), askTimeout());
             try {
-                TestResponse result = Await.result(future, awaitMax());
-                assertEquals(new TestResponse("ActorLookup[TestResponse]('TestActor')"), result);
+                assertEquals(new TestResponse("ActorLookup[TestResponse]('TestActor')"),
+                        stage.toCompletableFuture().get());
             } catch (Exception e) {
                 fail("Awaiting for response");
             }
@@ -251,7 +262,7 @@ public class ActorRegistryTest {
 
     @Test
     public void testTellByTypeAndOptionalName() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
+        new DebugTimingTestKit(system()) {{
             lookup.lookup(Optional.of("TestActor"), TestResponse.class)
                     .tell(new TestRequest("ActorLookup[TestResponse]('TestActor')"), getRef());
             assertEquals(new TestResponse("ActorLookup[TestResponse]('TestActor')"), receiveOne(awaitMax()));
@@ -260,12 +271,12 @@ public class ActorRegistryTest {
 
     @Test
     public void testAskByTypeAndOptionalName() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
-            Future<TestResponse> future = lookup.lookup(Optional.of("TestActor"), TestResponse.class)
+        new DebugTimingTestKit(system()) {{
+            CompletionStage<TestResponse> stage = lookup.lookup(Optional.of("TestActor"), TestResponse.class)
                     .ask(new TestRequest("ActorLookup[TestResponse]('TestActor')"), askTimeout());
             try {
-                TestResponse result = Await.result(future, awaitMax());
-                assertEquals(new TestResponse("ActorLookup[TestResponse]('TestActor')"), result);
+                assertEquals(new TestResponse("ActorLookup[TestResponse]('TestActor')"),
+                        stage.toCompletableFuture().get());
             } catch (Exception e) {
                 fail("Awaiting for response");
             }
@@ -274,7 +285,7 @@ public class ActorRegistryTest {
 
     @Test
     public void testIdentifyByType() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
+        new DebugTimingTestKit(system()) {{
             lookup.lookup(TestResponse.class).tell(new Identify(42), getRef());
             ActorIdentity id = ((ActorIdentity) receiveOne(awaitMax()));
             assertEquals("TestActor", id.ref().get().path().name());
@@ -283,17 +294,17 @@ public class ActorRegistryTest {
 
     @Test
     public void testLookupNonexistent() {
-        new DebugTimingTestKit(testKit.actorSystem()) {{
+        new DebugTimingTestKit(system()) {{
             lookup.lookup(String.class).tell("NotExist", getRef());
             assertTrue(receiveOne(awaitMax()) instanceof ActorNotFound);
         }};
     }
 
-    private static ObjectName getObjName(String name) throws MalformedObjectNameException {
-        return new ObjectName(JMX.prefix(boot.actorSystem()) + ActorRegistryBean.Pattern() + name);
+    private ObjectName getObjName(String name) throws MalformedObjectNameException {
+        return new ObjectName(JMX.prefix(system()) + ActorRegistryBean.Pattern() + name);
     }
 
-    private static Optional<Object> getActorRegistryBean(String actorName, String att) {
+    private Optional<Object> getActorRegistryBean(String actorName, String att) {
         try {
             return Optional.of(ManagementFactory.getPlatformMBeanServer().getAttribute(getObjName(actorName), att));
         } catch (Exception e) {
@@ -303,10 +314,10 @@ public class ActorRegistryTest {
 
     @Test
     public void testLookupNonexistentResponseType() {
-        Optional<Object> before = ActorRegistryTest.getActorRegistryBean("TestCube/TestActor1", "ActorMessageTypeList");
+        Optional<Object> before = getActorRegistryBean("TestCube/TestActor1", "ActorMessageTypeList");
         assertTrue(before.isPresent());
 
-        new DebugTimingTestKit(testKit.actorSystem()) {{
+        new DebugTimingTestKit(system()) {{
             lookup.lookup("TestActor1", String.class).tell(new TestRequest1("13"), getRef());
             assertTrue(receiveOne(awaitMax()) instanceof ActorNotFound);
         }};
@@ -314,10 +325,10 @@ public class ActorRegistryTest {
 
     @Test
     public void testLookupExistingType() {
-        Optional<Object> before = ActorRegistryTest.getActorRegistryBean("TestCube/TestActor1", "ActorMessageTypeList");
+        Optional<Object> before = getActorRegistryBean("TestCube/TestActor1", "ActorMessageTypeList");
         assertTrue(before.isPresent());
 
-        new DebugTimingTestKit(testKit.actorSystem()) {{
+        new DebugTimingTestKit(system()) {{
             lookup.lookup("TestActor1").tell(new TestRequest1("13"), getRef());
             assertTrue(receiveOne(awaitMax()) instanceof TestResponse);
         }};
@@ -325,15 +336,14 @@ public class ActorRegistryTest {
 
     @Test
     public void testLookupWithPoisonPill() {
-        Optional<Object> before = ActorRegistryTest.getActorRegistryBean("TestCube/TestActor1", "ActorMessageTypeList");
+        Optional<Object> before = getActorRegistryBean("TestCube/TestActor1", "ActorMessageTypeList");
         assertTrue(before.isPresent());
 
-        new DebugTimingTestKit(testKit.actorSystem()) {{
+        new DebugTimingTestKit(system()) {{
             lookup.lookup("TestActor1").tell(PoisonPill.getInstance(), getRef());
             new AwaitAssert(awaitMax()) {
                 protected void check() {
-                    Optional<Object> after =
-                            ActorRegistryTest.getActorRegistryBean("TestCube/TestActor1", "ActorMessageTypeList");
+                    Optional<Object> after = getActorRegistryBean("TestCube/TestActor1", "ActorMessageTypeList");
                     assertFalse(after.isPresent());
                 }
             };

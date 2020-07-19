@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -23,10 +23,10 @@ import scala.language.postfixOps
 
 object Timeouts {
 
-  implicit val askTimeout = Timeout(30 seconds)
+  implicit val askTimeout = Timeout(30.seconds)
 
-  val awaitMax = 60 seconds
+  val awaitMax = 60.seconds
 
   // This is used for tests that would keep the startup waiting, and expect a startup timeout anyway. Set it low.
-  val startupTimeout = Timeout(5 seconds)
+  val startupTimeout = Timeout(5.seconds)
 }

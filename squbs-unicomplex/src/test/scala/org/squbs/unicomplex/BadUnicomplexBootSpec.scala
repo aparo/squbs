@@ -1,17 +1,17 @@
 /*
- *  Copyright 2015 PayPal
+ * Copyright 2017 PayPal
  *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *  http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package org.squbs.unicomplex
@@ -23,11 +23,10 @@ import akka.actor.ActorSystem
 import akka.testkit.{ImplicitSender, TestKit}
 import com.typesafe.config.ConfigFactory
 import org.scalatest._
-import org.scalatest.concurrent.AsyncAssertions
+import org.scalatest.concurrent.Waiters
 import org.squbs.lifecycle.GracefulStop
+import org.squbs.unicomplex.Timeouts._
 import org.squbs.unicomplex.dummyextensions.DummyExtension
-import spray.util.Utils
-import Timeouts._
 
 import scala.language.postfixOps
 
@@ -43,15 +42,13 @@ object BadUnicomplexBootSpec {
     "NoMetaCube"
   ) map (dummyJarsDir + "/" + _)
 
-  val (_, port) = Utils.temporaryServerHostnameAndPort()
-
   val config = ConfigFactory.parseString(
     s"""
        |squbs {
        |  actorsystem-name = BadUnicomplexBootSpec
        |  ${JMX.prefixConfig} = true
        |}
-       |default-listener.bind-port = $port
+       |default-listener.bind-port = 0
     """.stripMargin
   ) withFallback ConfigFactory.parseString(
     """
@@ -81,13 +78,12 @@ object BadUnicomplexBootSpec {
 
 class BadUnicomplexBootSpec extends TestKit(BadUnicomplexBootSpec.boot.actorSystem) with ImplicitSender
 with WordSpecLike with Matchers with Inspectors with BeforeAndAfterAll
-with AsyncAssertions {
+with Waiters {
 
-  import org.squbs.unicomplex.BadUnicomplexBootSpec._
-
+  import BadUnicomplexBootSpec._
   import system.dispatcher
 
-  override def afterAll() {
+  override def afterAll(): Unit = {
     Unicomplex(system).uniActor ! GracefulStop
   }
 
@@ -128,7 +124,7 @@ with AsyncAssertions {
       val mbeanServer = ManagementFactory.getPlatformMBeanServer
       val cubesObjName = new ObjectName(prefix(system) + cubesName)
       val attr = mbeanServer.getAttribute(cubesObjName, "Cubes")
-      attr shouldBe a [Array[Any]]
+      attr shouldBe a [Array[_]]
       all (attr.asInstanceOf[Array[Any]]) shouldBe a [javax.management.openmbean.CompositeData]
       // 5 cubes registered above.
       val cAttr = attr.asInstanceOf[Array[_]]

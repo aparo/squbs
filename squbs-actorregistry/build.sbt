@@ -6,15 +6,16 @@ javaOptions in Test += "-Xmx512m"
 
 libraryDependencies ++= Seq(
   "org.scala-lang" % "scala-reflect" % scalaVersion.value,
-  "org.scalatest" %% "scalatest" % scalaTest % "test->*",
-  "com.typesafe.scala-logging" %% "scala-logging" % scalaLogging,
+  "org.scalatest" %% "scalatest" % scalatestV % Test,
+  "com.typesafe.scala-logging" %% "scala-logging" % scalaLoggingV,
   "com.typesafe.akka" %% "akka-actor" % akkaV,
   "com.typesafe.akka" %% "akka-agent" % akkaV,
-  "org.scala-lang.modules" %% "scala-java8-compat" % "0.7.0",
-  "com.typesafe.akka" %% "akka-testkit" % akkaV % "test",
-  "ch.qos.logback" % "logback-classic" % logbackClassic % "test",
-  "junit" % "junit" % "4.12" % "test",
-  "com.novocode" % "junit-interface" % "0.11" % "test->default"
+  "com.typesafe.akka" %% "akka-testkit" % akkaV % Test,
+  "ch.qos.logback" % "logback-classic" % logbackInTestV % Test,
+  "junit" % "junit" % junitV % Test,
+  "com.novocode" % "junit-interface" % junitInterfaceV % Test,
+  // This is added so that ScalaTest can produce an HTML report. Should be removed with scalatest 3.1.x
+  "org.pegdown" % "pegdown" % pegdownV % Test
 )
 
 testOptions in Test ++= Seq(

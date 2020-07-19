@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import org.squbs.actorregistry.ActorRegistryBean._
 import org.squbs.unicomplex.Initialized
 import org.squbs.unicomplex.JMX._
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import scala.language.existentials
 import scala.util.Success
 
@@ -44,14 +44,13 @@ private[actorregistry] class ActorRegistry extends Actor with Stash {
   var cubeCount =0
 
   private class ActorRegistryBean(actor: ActorRef) extends ActorRegistryMXBean {
-    import scala.collection.JavaConversions._
     def getPath = actor.path.toString
-    def getActorMessageTypeList = registry.getOrElse(actor, List.empty[CubeActorMessageType]).map(_.toString)
+    def getActorMessageTypeList = registry.getOrElse(actor, List.empty[CubeActorMessageType]).map(_.toString).asJava
   }
 
-  override def postStop() {
+  override def postStop(): Unit = {
     unregister(prefix + ActorRegistry.configBean)
-    totalBeans foreach unregister
+    totalBeans.asScala.foreach(unregister)
   }
 
   import ActorRegistry._
@@ -75,11 +74,16 @@ private[actorregistry] class ActorRegistry extends Actor with Stash {
       register(new ActorRegistryConfigBean(timeout, context), prefix + configBean )
 
       cubeCount = cubeActorInfoList.size
-      cubeActorInfoList.foreach { cubeActorInfo=>
-        context.actorSelection(cubeActorInfo.actorPath) ! Identify(cubeActorInfo)
-      }
 
-      context.become(startupReceive)
+      if(cubeCount == 0) // No well-known actors to register
+        context.parent ! Initialized(Success(None))
+      else {
+        cubeActorInfoList.foreach { cubeActorInfo =>
+          context.actorSelection(cubeActorInfo.actorPath) ! Identify(cubeActorInfo)
+        }
+
+        context.become(startupReceive)
+      }
 
     case ActorLookupMessage(lookupObj, Identify("ActorLookup"))  =>
       val result = processActorLookup(lookupObj).keys.headOption

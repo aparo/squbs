@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 package org.squbs.pattern.timeoutpolicy
 
-import org.scalactic.{TolerantNumerics, Equality}
+import org.scalactic.TolerantNumerics
 import org.scalatest.{Matchers, FlatSpecLike}
 import org.apache.commons.math3.special.Erf
 

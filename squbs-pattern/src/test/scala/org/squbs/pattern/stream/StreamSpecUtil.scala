@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ import net.openhft.chronicle.wire.{WireIn, WireOut}
 
 import scala.concurrent.duration._
 import scala.language.postfixOps
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import scala.util.Random
 
 object StreamSpecUtil {
@@ -38,7 +38,7 @@ object StreamSpecUtil {
   val burstSize = 500
 }
 
-class StreamSpecUtil[T](outputPort: Int = 1, autoCommit: Boolean = true) {
+class StreamSpecUtil[T, S](outputPort: Int = 1) {
 
   import StreamSpecUtil._
   val outputPorts = outputPort
@@ -49,18 +49,18 @@ class StreamSpecUtil[T](outputPort: Int = 1, autoCommit: Boolean = true) {
     Map(
       "persist-dir" -> s"${tempPath.getAbsolutePath}",
       "output-ports" -> s"$outputPorts",
-      "auto-commit" -> s"$autoCommit",
       "roll-cycle" -> "TEST_SECONDLY".toLowerCase()
-    )
+    ).asJava
   }
 
   val in = Source(1 to elementCount)
   lazy val atomicCounter = Vector.tabulate(outputPorts)(_ => new AtomicInteger(0))
   lazy val flowCounter = Flow[Any].map(_ => 1L).reduce(_ + _).toMat(Sink.head)(Keep.right)
-  lazy val merge = Merge[Event[T]](outputPorts)
-  lazy val throttle = Flow[Event[T]].throttle(flowRate, flowUnit, burstSize, ThrottleMode.shaping)
-  lazy val head = Sink.head[Event[T]]
-  lazy val last = Sink.last[Event[T]]
+  lazy val merge = Merge[S](outputPorts)
+  lazy val throttle = Flow[S].throttle(flowRate, flowUnit, burstSize, ThrottleMode.shaping)
+  lazy val throttleMore = Flow[S].throttle(flowRate * 9 / 10, flowUnit, burstSize, ThrottleMode.shaping)
+  lazy val head = Sink.head[S]
+  lazy val last = Sink.last[S]
   val minRandom = 100
   lazy val random = Random.nextInt(elementCount - minRandom - 1) + minRandom
   lazy val filterCounter = new AtomicInteger(0)
@@ -70,7 +70,7 @@ class StreamSpecUtil[T](outputPort: Int = 1, autoCommit: Boolean = true) {
 
   def clean() = delete(tempPath)
 
-  private def delete(file: File) {
+  private def delete(file: File): Unit = {
     if (file.isDirectory)
       Option(file.listFiles).map(_.toList).getOrElse(Nil).foreach(delete)
     file.delete

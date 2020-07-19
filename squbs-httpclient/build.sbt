@@ -7,22 +7,28 @@ javaOptions in Test += "-Xmx512m"
 libraryDependencies ++= Seq(
   "com.typesafe.akka"         %% "akka-actor"                   % akkaV,
   "com.typesafe.akka"         %% "akka-slf4j"                   % akkaV,
-  "com.typesafe.akka"         %% "akka-testkit"                 % akkaV % "test",
-  "com.typesafe.scala-logging" %% "scala-logging" 			      	% scalaLogging,
-  "io.spray"                  %% "spray-client"                 % sprayV,
-  "io.spray"                  %% "spray-routing-shapeless2"     % sprayV % "test",
-  "io.spray"                  %% "spray-json"                   % "1.3.2" % "test",
-  "org.scalatest"             %% "scalatest"                    % "2.2.1" % "test->*",
-  "org.json4s"                %% "json4s-native"                % "3.3.0",
-  "org.json4s"                %% "json4s-jackson"               % "3.3.0",
-  "org.scala-lang.modules"    %% "scala-java8-compat"           % "0.7.0",
-  "com.fasterxml.jackson.module" %% "jackson-module-scala"      % "2.6.3",
-  "com.fasterxml.jackson.module" % "jackson-module-parameter-names" % "2.6.3",
-  "ch.qos.logback" % "logback-classic" % logbackClassic % "test"
+  "com.typesafe.akka"         %% "akka-stream"                  % akkaV,
+  "com.typesafe.akka"         %% "akka-http-core"               % akkaHttpV ,
+  "com.typesafe.scala-logging" %% "scala-logging"               % scalaLoggingV,
+  "org.scalatest"             %% "scalatest"                    % scalatestV % Test,
+  "com.typesafe.akka"         %% "akka-testkit"                 % akkaV % Test,
+  "de.heikoseeberger" %% "akka-http-json4s" % heikoseebergerAkkaHttpJsonV % Test,
+  "de.heikoseeberger" %% "akka-http-jackson" % heikoseebergerAkkaHttpJsonV % Test,
+  "org.json4s" %% "json4s-jackson" % json4sV % Test,
+  "com.fasterxml.jackson.module" %% "jackson-module-scala" % jacksonV % Test,
+  "junit" % "junit" % junitV % Test,
+  "com.novocode" % "junit-interface" % junitInterfaceV % Test,
+  "ch.qos.logback" % "logback-classic" % logbackInTestV % Test,
+  "org.littleshoot" % "littleproxy" % "1.1.2" % Test,
+  // This is added so that ScalaTest can produce an HTML report. Should be removed with scalatest 3.1.x
+  "org.pegdown" % "pegdown" % pegdownV % Test
 )
 
 javacOptions += "-parameters"
 
-(testOptions in Test) += Tests.Argument(TestFrameworks.ScalaTest, "-h", "report/squbs-httpclient")
+testOptions in Test ++= Seq(
+  Tests.Argument(TestFrameworks.ScalaTest, "-h", "report/squbs-httpclient"),
+  Tests.Argument(TestFrameworks.JUnit, "-v", "-a")
+)
 
 updateOptions := updateOptions.value.withCachedResolution(true)

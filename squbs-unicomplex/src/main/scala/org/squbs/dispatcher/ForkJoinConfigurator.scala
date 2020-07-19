@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
 
 import akka.dispatch._
 import com.typesafe.config.Config
-import org.squbs.unicomplex.{ConfigUtil, ForkJoinPoolMXBean, JMX}
+import org.squbs.unicomplex.{ForkJoinPoolMXBean, JMX}
 
 import scala.concurrent.{BlockContext, CanAwait}
 
@@ -60,7 +60,7 @@ class ForkJoinConfigurator(config: Config, prerequisites: DispatcherPrerequisite
       case other ⇒ (other, id)
     }
     val fjConf = config.getConfig("fork-join-executor")
-    import ConfigUtil._
+    import org.squbs.util.ConfigUtil._
     new ForkJoinExecutorServiceFactory(
       fjConf.get[String]("jmx-name-prefix", ""),
       name,
@@ -103,8 +103,9 @@ case class AdaptedThreadFactory(delegateFactory: MonitorableThreadFactory)
 }
 
 object AdaptedThreadFactory {
-  val doNothing: Thread.UncaughtExceptionHandler =
-    new Thread.UncaughtExceptionHandler() { def uncaughtException(thread: Thread, cause: Throwable) = () }
+  val doNothing: Thread.UncaughtExceptionHandler = new Thread.UncaughtExceptionHandler {
+    override def uncaughtException(t: Thread, e: Throwable): Unit = ()
+  }
 
   private[squbs] class AkkaForkJoinWorkerThread(_pool: ForkJoinPool)
     extends ForkJoinWorkerThread(_pool) with BlockContext {

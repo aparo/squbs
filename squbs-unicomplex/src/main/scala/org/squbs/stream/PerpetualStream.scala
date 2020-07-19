@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -15,92 +15,49 @@
  */
 package org.squbs.stream
 
-import akka.Done
-import akka.actor.{Actor, ActorLogging, ActorRef, Stash, Terminated}
+import akka.actor.{ActorContext, ActorRefFactory}
+import akka.japi.Pair
 import akka.stream.Supervision._
-import akka.stream.scaladsl.RunnableGraph
-import akka.stream.{ActorMaterializer, ActorMaterializerSettings, KillSwitches, Supervision}
-import org.squbs.lifecycle.{GracefulStop, GracefulStopHelper}
-import org.squbs.unicomplex._
+import akka.stream._
+import akka.stream.scaladsl.{RunnableGraph, Sink}
+import akka.util.Timeout
+import akka.{Done, NotUsed}
 
-import scala.concurrent.Future
+import scala.concurrent.duration._
+import scala.concurrent.{Await, Future}
+import scala.language.postfixOps
+import scala.reflect.ClassTag
 
 /**
-  * Traits for perpetual streams that start and stop with the server. The simplest conforming implementation
-  * follows these requirements:<ol>
-  *   <li>The stream materializes to a Future or a Product (Tuple, List, etc.)
-  *       for which the last element is a Future</li>
-  *   <li>This Future represents the state whether the stream is done</li>
-  *   <li>The stream has the killSwitch as the first processing stage right behind the source</li>
-  * </ol>Non-conforming implementations need to implement one or more of the provided hooks while
-  * conforming implementations can well be supported by the default implementations.
-  * @tparam T The type of the materialized value of the stream.
-  */
-trait PerpetualStream[T] extends Actor with ActorLogging with Stash with GracefulStopHelper {
+ * Scala API for perpetual stream that starts and stops with the server.
+ * @tparam T The type of the materialized value of the stream.
+ */
+trait PerpetualStream[T] extends PerpetualStreamBase[T] {
 
   /**
-    * Describe your graph by implementing streamGraph
- *
-    * @return The graph.
-    */
+   * Describe your graph by implementing streamGraph
+   *
+   * @return The graph.
+   */
   def streamGraph: RunnableGraph[T]
 
-  private[this] var matValueOption: Option[T] = None
-
-  final def matValue = matValueOption match {
-    case Some(v) => v
-    case None => throw new IllegalStateException("Materialized value not available before streamGraph is started!")
-  }
-
   /**
-    * The decider to use. Override if not resumingDecider.
-    */
+   * The decider to use. Override if not resumingDecider.
+   */
   def decider: Supervision.Decider = { t =>
     log.error("Uncaught error {} from stream", t)
     t.printStackTrace()
     Resume
   }
 
-  /**
-    * The kill switch to integrate into the stream. Override this if you want a different switch
-    * or one that is shared between perpetual streams.
-    *
-    * @return The kill switch.
-    */
-  lazy val killSwitch = KillSwitches.shared(getClass.getName)
-
-
-  implicit val materializer =
+  implicit val materializer: ActorMaterializer =
     ActorMaterializer(ActorMaterializerSettings(context.system).withSupervisionStrategy(decider))
 
-  Unicomplex() ! SystemState
-  Unicomplex() ! ObtainLifecycleEvents(Active, Stopping)
+  override private[stream] final def runGraph(): T = streamGraph.run()
 
-  context.become(starting)
-
-  final def starting: Receive = {
-    case Active =>
-      context.become(running orElse receive)
-      matValueOption = Option(streamGraph.run())
-      unstashAll()
-    case _ => stash()
-  }
-
-  final def running: Receive = {
-    case Stopping | GracefulStop =>
-      import context.dispatcher
-      val children = context.children
-      children foreach context.watch
-      shutdown() onComplete { _ => self ! Done }
-      context.become(stopped(children))
-  }
-
-  final def stopped(children: Iterable[ActorRef]): Receive = {
-    case Done => materializer.shutdown()
-
-    case Terminated(ref) =>
-      val remaining = children filterNot ( _ == ref )
-      if (remaining.nonEmpty) context become stopped(remaining) else context stop self
+  override private[stream] final def shutdownAndNotify(): Unit = {
+    import context.dispatcher
+    shutdown() onComplete { _ => self ! Done }
   }
 
   def receive: Receive = PartialFunction.empty
@@ -119,15 +76,65 @@ trait PerpetualStream[T] extends Actor with ActorLogging with Stash with Gracefu
     * @return A Future[Done] that gets completed when the whole stream is done.
     */
   def shutdown(): Future[Done] = {
-    killSwitch.shutdown()
     import context.dispatcher
     matValue match {
-      case f: Future[_] => f.map(_ => Done)
-      case p: Product if p.productArity > 0 => p.productElement(p.productArity - 1) match {
+      case f: Future[_] =>
+        killSwitch.shutdown()
+        f.map(_ => Done)
+      case p: Product if p.productArity > 0 =>
+        p.productElement(0) match {
+          case k: KillSwitch => k.shutdown()
+          case _ =>
+        }
+        killSwitch.shutdown()
+        p.productElement(p.productArity - 1) match {
           case f: Future[_] => f.map(_ => Done)
           case _ => Future.successful { Done }
         }
-      case _ => Future.successful { Done }
+      case _ =>
+        killSwitch.shutdown()
+        Future.successful { Done }
+    }
+  }
+}
+
+trait PerpetualStreamMatValue[T] {
+
+  protected val context: ActorContext
+
+  private[stream] def actorLookup(name: String)(implicit refFactory: ActorRefFactory, timeout: Timeout) =
+    SafeSelect(name)
+
+  def matValue(perpetualStreamName: String)(implicit classTag: ClassTag[T]): Sink[T, NotUsed] = {
+    implicit val sys = context.system
+    implicit val timeout: Timeout = Timeout(10.seconds)
+    import akka.pattern.ask
+
+    val responseF = actorLookup(perpetualStreamName) ? MatValueRequest
+
+    // Exception! This code is executed only at startup. We really need a better API, though.
+    Await.result(responseF, timeout.duration) match {
+      case sink: Sink[T, NotUsed] => sink
+      case p: akka.japi.Pair[_, _] => sinkCast(p.first)
+      case l: java.util.List[_] =>
+        if (l.isEmpty) {
+          throw new ClassCastException(
+            "Materialized value mismatch. First element should be a Sink. Found an empty java.util.List."
+          )
+        }
+        sinkCast(l.get(0))
+      case p: Product => sinkCast(p.productElement(0))
+      case other =>
+        throw new ClassCastException("Materialized value mismatch. Should be a Sink or a " +
+          s"Product/akka.japi.Pair/java.util.List with a Sink as its first element. Found ${other.getClass.getName}.")
+    }
+  }
+
+  private def sinkCast(a: Any): Sink[T, NotUsed] = {
+    a match {
+      case sink: Sink[T, NotUsed] => sink
+      case other => throw new ClassCastException(
+        s"Materialized value mismatch. First element should be a Sink. Found ${other.getClass.getName}.")
     }
   }
 }

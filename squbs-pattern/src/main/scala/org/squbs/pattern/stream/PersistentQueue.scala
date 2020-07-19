@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -22,10 +22,12 @@ import com.typesafe.scalalogging.Logger
 import net.openhft.chronicle.bytes.MappedBytesStore
 import net.openhft.chronicle.core.OS
 import net.openhft.chronicle.queue.ChronicleQueueBuilder
-import net.openhft.chronicle.queue.impl.StoreFileListener
 import net.openhft.chronicle.queue.impl.single.SingleChronicleQueue
+import net.openhft.chronicle.queue.impl.{RollingResourcesCache, StoreFileListener}
 import net.openhft.chronicle.wire.{ReadMarshallable, WireIn, WireOut, WriteMarshallable}
 import org.slf4j.LoggerFactory
+
+import scala.compat.java8.FunctionConverters._
 
 case class Event[T](outputPortId: Int, index: Long, entry: T)
 /**
@@ -33,7 +35,7 @@ case class Event[T](outputPortId: Int, index: Long, entry: T)
   *
   * @tparam T The type of elements to be stored in the queue.
   */
-class PersistentQueue[T](config: QueueConfig, onCommitCallback: Int => Unit = (x => {}))(implicit val serializer: QueueSerializer[T]) {
+class PersistentQueue[T](config: QueueConfig, onCommitCallback: Int => Unit = _ => {})(implicit val serializer: QueueSerializer[T]) {
 
   def this(config: Config)(implicit serializer: QueueSerializer[T]) = this(QueueConfig.from(config))
 
@@ -47,15 +49,18 @@ class PersistentQueue[T](config: QueueConfig, onCommitCallback: Int => Unit = (x
 
   val logger = Logger(LoggerFactory.getLogger(this.getClass))
 
-  private val queue = ChronicleQueueBuilder
+  private[stream] val resourceManager = new ResourceManager
+
+  private val builder = ChronicleQueueBuilder
     .single(persistDir.getAbsolutePath)
     .wireType(wireType)
     .rollCycle(rollCycle)
     .blockSize(blockSize.toInt)
     .indexSpacing(indexSpacing)
     .indexCount(indexCount)
-    .storeFileListener(new ResourceManager)
-    .build()
+    .storeFileListener(resourceManager)
+
+  private val queue = builder.build()
 
   private val appender = queue.acquireAppender
   private val reader = Vector.tabulate(outputPorts)(_ => queue.createTailer)
@@ -70,8 +75,17 @@ class PersistentQueue[T](config: QueueConfig, onCommitCallback: Int => Unit = (x
   private val cycle = Array.ofDim[Int](outputPorts)
   private val lastCommitIndex = Array.ofDim[Long](outputPorts)
 
-  val totalOutputPorts = outputPorts
-  val autoCommit = config.autoCommit
+  val totalOutputPorts: Int = outputPorts
+
+  import SingleChronicleQueue.SUFFIX
+
+  // `fileIdParser` will parse a given filename to its long value.
+  // The value is based on epoch time and grows incrementally.
+  // https://github.com/OpenHFT/Chronicle-Queue/blob/chronicle-queue-4.16.5/src/main/java/net/openhft/chronicle/queue/RollCycles.java#L85
+  private[stream] val fileIdParser = new RollingResourcesCache(queue.rollCycle(), queue.epoch(),
+    asJavaFunction((name: String) => new File(builder.path(), name + SUFFIX)),
+    asJavaFunction((file: File) => file.getName.stripSuffix(SUFFIX))
+  )
 
   private def mountIndexFile(): Unit = {
     indexFile = IndexFile.of(path, OS.pageSize())
@@ -84,8 +98,9 @@ class PersistentQueue[T](config: QueueConfig, onCommitCallback: Int => Unit = (x
     0 until outputPorts foreach { outputPortId =>
       val startIdx = read(outputPortId)
       logger.info("Setting idx for outputPort {} - {}", outputPortId.toString, startIdx.toString)
-      reader(outputPortId).moveToIndex(startIdx)
-      dequeue(outputPortId) // dequeue the first read element
+      if (reader(outputPortId).moveToIndex(startIdx)) {
+        dequeue(outputPortId) // dequeue the first read element if resumed from index
+      }
       lastCommitIndex(outputPortId) = startIdx
       cycle(outputPortId) = queue.rollCycle().toCycle(startIdx)
     }
@@ -96,11 +111,10 @@ class PersistentQueue[T](config: QueueConfig, onCommitCallback: Int => Unit = (x
     *
     * @param element The element to be added.
     */
-  def enqueue(element: T): Unit = {
+  def enqueue(element: T): Unit =
     appender.writeDocument(new WriteMarshallable {
       override def writeMarshallable(wire: WireOut): Unit = serializer.writeElement(element, wire)
     })
-  }
 
   /**
     * Fetches the first element from the queue and removes it from the queue.
@@ -109,14 +123,18 @@ class PersistentQueue[T](config: QueueConfig, onCommitCallback: Int => Unit = (x
     */
   def dequeue(outputPortId: Int = 0): Option[Event[T]] = {
     var output: Option[Event[T]] = None
-    if (reader(outputPortId).readDocument(new ReadMarshallable {
-      override def readMarshallable(wire: WireIn): Unit =
-        output = {
-          val element = serializer.readElement(wire)
-          val index = reader(outputPortId).index
-          element map { e => Event[T](outputPortId, index, e) }
+    if (reader(outputPortId).readDocument(
+      new ReadMarshallable {
+        override def readMarshallable(wire: WireIn): Unit = {
+          output = {
+            val element = serializer.readElement(wire)
+            val index = reader(outputPortId).index
+            element map { e => Event[T](outputPortId, index, e) }
+          }
+
         }
-    })) output else None
+      }
+    )) output else None
   }
 
   /**
@@ -144,7 +162,7 @@ class PersistentQueue[T](config: QueueConfig, onCommitCallback: Int => Unit = (x
       } else {
         config.commitOrderPolicy match {
           case Lenient =>
-            logger.warn(s"Missing or out of order commits.  previous: ${lastCommitIndex(outputPortId)} latest: $index cycle: ${cycle(outputPortId)}")
+            logger.info(s"Missing or out of order commits.  previous: ${lastCommitIndex(outputPortId)} latest: $index cycle: ${cycle(outputPortId)}")
             lastCommitIndex(outputPortId) = index
           case Strict =>
             val msg = s"Missing or out of order commits.  previous: ${lastCommitIndex(outputPortId)} latest: $index cycle: ${cycle(outputPortId)}"
@@ -187,17 +205,21 @@ class PersistentQueue[T](config: QueueConfig, onCommitCallback: Int => Unit = (x
     }
 
     override def onReleased(cycle: Int, file: File): Unit =
-      if (minCycle >= cycle) deleteFiles(cycle, fileNameToLong(file))
+      if (minCycle >= cycle) deleteOlderFiles(cycle, file)
 
     private def minCycle = reader.iterator.map(_.cycle).min
 
-    private def fileNameToLong(file: File): Long = file.getName
-      .stripSuffix(SingleChronicleQueue.SUFFIX).split("-").last.toLong
-
-    private def deleteFiles(cycle: Int, fileNameInLong: Long) = Option(persistDir.listFiles) map {
-      f => f.filterNot(f => f.getName.equals(Tailer) || fileNameToLong(f) >= fileNameInLong).map {
-        file => logger.info("File released {} - {}", cycle.toString, file.getPath)
-          file.delete()
+    // deletes old files whose long value (based on epoch) is < released file's long value.
+    private def deleteOlderFiles(cycle: Int, releasedFile: File): Unit = {
+      for {
+        allFiles <- Option(persistDir.listFiles).toSeq
+        file <- allFiles
+        if (file.getName.endsWith(SUFFIX) &&  fileIdParser.toLong(releasedFile) > (fileIdParser.toLong(file)))
+      } {
+        logger.info("File released {} - {}", cycle.toString, file.getPath)
+        if (!file.delete()) {
+          logger.error("Failed to DELETE {}", file.getPath)
+        }
       }
     }
   }

@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 package org.squbs.unicomplex
 
-import java.io.{File, FileInputStream, InputStreamReader, Reader}
+import java.io._
 import java.net.URL
 import java.util.concurrent.{TimeUnit, TimeoutException}
 import java.util.jar.JarFile
@@ -29,15 +29,18 @@ import akka.util.Timeout
 import com.typesafe.config._
 import com.typesafe.scalalogging.LazyLogging
 import org.squbs.lifecycle.ExtensionLifecycle
-import org.squbs.pipeline.streaming.PipelineSetting
-import org.squbs.unicomplex.ConfigUtil._
+import org.squbs.pipeline.PipelineSetting
 import org.squbs.unicomplex.UnicomplexBoot.CubeInit
+import org.squbs.util.ConfigUtil._
 
 import scala.annotation.tailrec
 import scala.collection.concurrent.TrieMap
+import scala.collection.mutable
+import scala.collection.JavaConverters._
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
-import scala.language.postfixOps
+import scala.language.{postfixOps, existentials}
+import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
 object UnicomplexBoot extends LazyLogging {
@@ -87,11 +90,10 @@ object UnicomplexBoot extends LazyLogging {
       case None =>
         // Sorry, the configDir is used to read the file. So it cannot be read from this config file.
         val configDir = new File(baseConfig.getString(extConfigDirKey))
-        import collection.JavaConversions._
         val configNames = baseConfig.getStringList(extConfigNameKey)
         configNames.add("application")
         val parseOptions = ConfigParseOptions.defaults().setAllowMissing(true)
-        val addConfigs = configNames map {
+        val addConfigs = configNames.asScala.map {
           name => ConfigFactory.parseFileAnySyntax(new File(configDir, name), parseOptions)
         }
         if (addConfigs.isEmpty) baseConfig
@@ -110,11 +112,12 @@ object UnicomplexBoot extends LazyLogging {
     val cpResources: Seq[URL] =
       if (withClassPath) {
         val loader = getClass.getClassLoader
-        import scala.collection.JavaConversions._
-        Seq("conf", "json", "properties") flatMap { ext => loader.getResources(s"META-INF/squbs-meta.$ext") }
+        Seq("conf", "json", "properties").flatMap { ext => loader.getResources(s"META-INF/squbs-meta.$ext").asScala }
       } else Seq.empty
 
-    val jarConfigs = (cpResources ++ resources) map readConfigs collect { case Some(jarCfg) => jarCfg }
+    // Dedup the resources, just in case.
+    val allResources = mutable.LinkedHashSet(cpResources ++ resources : _*).toSeq
+    val jarConfigs = allResources map readConfigs collect { case Some(jarCfg) => jarCfg }
     resolveCubes(jarConfigs, boot)
   }
 
@@ -130,54 +133,52 @@ object UnicomplexBoot extends LazyLogging {
     boot.copy(cubes = cubeList, jarConfigs = jarConfigs, listeners = activeListeners, listenerAliases = activeAliases)
   }
 
-  private[this] def readConfigs(jarName: String): Option[Config] = {
+  private def createReaderFromFS(directory: File): String => Option[Reader] = {
+    (filePath: String) => Option(new File(directory, filePath)) collect {
+      case configFile if configFile.isFile => new InputStreamReader(new FileInputStream(configFile), "UTF-8")
+    }
+  }
 
+  private def createReaderFromJarFile(file: File): String => Option[Reader] = {
+    val triedJarFile = Try(new JarFile(file))
+    (filePath: String) => triedJarFile match {
+      case Success(jarFile) => Option(jarFile.getEntry(filePath)) collect {
+        case configFile if !configFile.isDirectory => new InputStreamReader(jarFile.getInputStream(configFile), "UTF-8")
+      }
+      case Failure(e)       => throw e
+      }
+  }
+
+  private def getConfigReader(jarName: String): Option[(Option[Reader], String)] = {
     // Make it extra lazy, so that we do not create the next File if the previous one succeeds.
     val configExtensions = Stream("conf", "json", "properties")
-
-    val jarFile = new File(jarName)
-
-    var fileName: String = "" // Contains the evaluated config file name, used for reporting errors.
-    var configReader: Option[Reader] = None
-
-    try {
-      configReader =
-        if (jarFile.isDirectory) {
-
-          def getConfFile(ext: String) = {
-            fileName = "META-INF/squbs-meta." + ext
-            val confFile = new File(jarFile, fileName)
-            if (confFile.isFile) Option(new InputStreamReader(new FileInputStream(confFile), "UTF-8"))
-            else None
-          }
-          (configExtensions map getConfFile find { _.isDefined }).flatten
-
-        } else if (jarFile.isFile) {
-
-          val jar = new JarFile(jarFile)
-
-          def getConfFile(ext: String) = {
-            fileName = "META-INF/squbs-meta." + ext
-            val confFile = jar.getEntry(fileName)
-            if (confFile != null && !confFile.isDirectory)
-              Option(new InputStreamReader(jar.getInputStream(confFile), "UTF-8"))
-            else None
-          }
-          (configExtensions map getConfFile find { _.isDefined }).flatten
-        } else None
-
-      configReader map ConfigFactory.parseReader
-
-    } catch {
-      case e: Exception =>
-        logger.info(s"${e.getClass.getName} reading configuration from $jarName : $fileName.\n ${e.getMessage}")
-        None
-    } finally {
-      configReader match {
-        case Some(reader) => reader.close()
-        case None =>
-      }
+    val maybeConfFileReader = Option(new File(jarName)) collect {
+      case file if file.isDirectory => createReaderFromFS(file)
+      case file if file.isFile      => createReaderFromJarFile(file)
     }
+
+    maybeConfFileReader flatMap (fileReader => configExtensions map { ext =>
+      val currentFile = s"META-INF/squbs-meta.$ext"
+      Try(fileReader(currentFile)) match {
+        case Failure(e) =>
+          logger.info(s"${e.getClass.getName} reading configuration from $jarName : $currentFile.\n${e.getMessage}")
+          None
+        case Success(maybeReader) => Option(maybeReader, currentFile)
+      }
+    } find (_.isDefined) flatten)
+  }
+
+  private[this] def readConfigs(jarName: String): Option[Config] = {
+    getConfigReader(jarName) flatMap ((maybeReader: Option[Reader], fileName: String) => {
+      val maybeConfig = Try(maybeReader map ConfigFactory.parseReader) match {
+        case Failure(e)   =>
+          logger.info(s"${e.getClass.getName} reading configuration from $jarName : $fileName.\n${e.getMessage}")
+          None
+        case Success(cfg) => cfg
+      }
+      maybeReader foreach(_.close())
+      maybeConfig
+    }).tupled
   }
 
   private[this] def readConfigs(resource: URL): Option[(String, Config)] = {
@@ -204,7 +205,7 @@ object UnicomplexBoot extends LazyLogging {
       val config = ConfigFactory.parseURL(resource, ConfigParseOptions.defaults().setAllowMissing(false))
       Some((jarName, config))
     } catch {
-      case e: Exception =>
+      case NonFatal(e) =>
         logger.warn(s"${e.getClass.getName} reading configuration from $jarName.\n ${e.getMessage}")
         None
     }
@@ -301,38 +302,37 @@ object UnicomplexBoot extends LazyLogging {
         cubeSupervisor ! StartCubeActor(props, name, initRequired)
         Some((fullName, name, version, clazz))
       } catch {
-        case e: Exception =>
+        case NonFatal(e) =>
           val t = getRootCause(e)
           logger.warn(s"Can't load actor: $className.\n" +
             s"Cube: $fullName $version\n" +
             s"Path: $jarPath\n" +
             s"${t.getClass.getName}: ${t.getMessage}")
           t.printStackTrace()
+          cubeSupervisor ! StartFailure(e)
           None
       }
     }
 
-    def startServiceRoute(clazz: Class[_], proxyName: Option[String], webContext: String, listeners: Seq[String],
+    def startServiceRoute(clazz: Class[_], webContext: String, listeners: Seq[String],
                           ps: PipelineSetting) = {
 
       Try {
-        // Try non-streaming RouteDefinition first.
         (clazz asSubclass classOf[RouteDefinition], classOf[RouteActor])
-      } orElse {
-        // Try the streaming (Akka-Http) RouteDefinition.
-        Try {
-          (clazz asSubclass classOf[streaming.RouteDefinition], classOf[streaming.RouteActor])
-        }
-      } match {
-        case Success((routeClass, routeActor)) =>
-          val props = Props(routeActor, webContext, routeClass)
-          val className = clazz.getSimpleName
-          val actorName =
-            if (webContext.length > 0) s"${webContext.replace('/', '_')}-$className-route"
-            else s"root-$className-route"
-          cubeSupervisor ! StartCubeService(webContext, listeners, props, actorName, proxyName, ps, initRequired = true)
-          Some((fullName, name, version, clazz))
-        case _ => None
+      } orElse Try {
+        (clazz asSubclass classOf[FlowDefinition], classOf[FlowActor])
+      } orElse Try {
+        (clazz asSubclass classOf[AbstractRouteDefinition], classOf[JavaRouteActor])
+      } orElse Try {
+        (clazz asSubclass classOf[AbstractFlowDefinition], classOf[JavaFlowActor])
+      } map { case (routeClass, routeActor) =>
+        val props = Props(routeActor, webContext, routeClass)
+        val className = clazz.getSimpleName
+        val actorName =
+          if (webContext.length > 0) s"${webContext.replace('/', '_')}-$className-route"
+          else s"root-$className-route"
+        cubeSupervisor ! StartCubeService(webContext, listeners, props, actorName, ps, initRequired = true)
+        (fullName, name, version, clazz)
       }
     }
 
@@ -343,32 +343,28 @@ object UnicomplexBoot extends LazyLogging {
       override def produce() = creator()
     }
 
-    def startServiceActor(clazz: Class[_], proxyName: Option[String], webContext: String, listeners: Seq[String],
-                          ps: PipelineSetting, initRequired: Boolean) = {
-      try {
+    def startServiceActor(clazz: Class[_], webContext: String, listeners: Seq[String],
+                          ps: PipelineSetting, initRequired: Boolean) =
+      Try {
         val actorClass = clazz asSubclass classOf[Actor]
-        def actorCreator: Actor = WebContext.createWithContext[Actor](webContext) { actorClass.newInstance() }
+        def actorCreator: Actor = WithWebContext(webContext) { actorClass.newInstance() }
         val props = Props(classOf[TypedCreatorFunctionConsumer], clazz, actorCreator _)
         val className = clazz.getSimpleName
         val actorName =
           if (webContext.length > 0) s"${webContext.replace('/', '_')}-$className-handler"
           else s"root-$className-handler"
-        cubeSupervisor ! StartCubeService(webContext, listeners, props, actorName, proxyName, ps, initRequired)
-        Some((fullName, name, version, actorClass))
-      } catch {
-        case e: ClassCastException => None
+        cubeSupervisor ! StartCubeService(webContext, listeners, props, actorName, ps, initRequired)
+        (fullName, name, version, actorClass)
       }
-    }
 
     def startService(serviceConfig: Config): Option[(String, String, String, Class[_])] =
-      try {
+      Try {
         val className = serviceConfig.getString("class-name")
         val clazz = Class.forName(className, true, getClass.getClassLoader)
-        val proxyName = serviceConfig.getOption[String]("proxy-name") map (_.trim)
         val webContext = serviceConfig.getString("web-context")
         val pipeline = serviceConfig.getOption[String]("pipeline")
-        val defaultFlowsOn = serviceConfig.getOption[Boolean]("defaultPipelineOn")
-        val streamingPipelineSettings = (pipeline, defaultFlowsOn)
+        val defaultFlowsOn = serviceConfig.getOption[Boolean]("defaultPipeline")
+        val pipelineSettings = (pipeline, defaultFlowsOn)
 
         val listeners = serviceConfig.getOption[Seq[String]]("listeners").fold(Seq("default-listener")) { list =>
           if (list.contains("*")) aliases.values.toSeq.distinct
@@ -382,21 +378,24 @@ object UnicomplexBoot extends LazyLogging {
           }
         }
 
-        val service = startServiceRoute(clazz, proxyName, webContext, listeners, streamingPipelineSettings) orElse
-          startServiceActor(clazz, proxyName, webContext, listeners, streamingPipelineSettings,
+        val service = startServiceRoute(clazz, webContext, listeners, pipelineSettings) orElse
+          startServiceActor(clazz, webContext, listeners, pipelineSettings,
             serviceConfig.get[Boolean]("init-required", false))
-
-        if (service.isEmpty) throw new ClassCastException(s"Class $className is neither a RouteDefinition nor an Actor.")
-        service
-
-      } catch {
-        case e: Exception =>
+        service match {
+          case Success(svc) => svc
+          case Failure(e) =>
+            throw new IOException(s"Class $className is neither a RouteDefinition nor an Actor.", e)
+        }
+      } match {
+        case Success(svc) => Some(svc)
+        case Failure(e) =>
           val t = getRootCause(e)
           logger.warn(s"Can't load service definition $serviceConfig.\n" +
             s"Cube: $fullName $version\n" +
             s"Path: $jarPath\n" +
             s"${t.getClass.getName}: ${t.getMessage}")
           t.printStackTrace()
+          cubeSupervisor ! StartFailure(e)
           None
       }
 
@@ -413,8 +412,7 @@ object UnicomplexBoot extends LazyLogging {
   }
 
   def configuredListeners(config: Config): Map[String, Config] = {
-    import collection.JavaConversions._
-    val listeners = config.root.toSeq collect {
+    val listeners = config.root.asScala.toSeq.collect {
       case (n, v: ConfigObject) if v.toConfig.getOption[String]("type").contains("squbs.listener") => (n, v.toConfig)
     }
 
@@ -461,14 +459,49 @@ object UnicomplexBoot extends LazyLogging {
     (activeAliases, activeListeners, missingAliases)
   }
 
-  def startServiceInfra(boot: UnicomplexBoot)(implicit actorSystem: ActorSystem) {
+  def startServiceInfra(boot: UnicomplexBoot)(implicit actorSystem: ActorSystem): Unit = {
+
+    def getTimeout(keyRelPath: String): Option[Timeout] = {
+      val key = s"squbs.service-infra.$keyRelPath"
+      val timeoutDuration = actorSystem.settings.config.getOptionalDuration(key)
+      timeoutDuration.map { d => 
+        require(d.toMillis > 0, s"The config property, $key, must be greater than 0 milliseconds.")
+        Timeout(d)
+      }
+    }
+
+    val overallTimeout = getTimeout("timeout").getOrElse(Timeout(60.seconds))
+
+    val listenerTimeout =
+      getTimeout("listener-timeout")
+        .getOrElse(Timeout(10.seconds))
+
+    startServiceInfra(boot, overallTimeout, listenerTimeout)
+  }
+
+  def startServiceInfra(
+    boot: UnicomplexBoot,
+    timeout: Timeout,
+    listenerTimeout: Timeout
+  )(implicit actorSystem: ActorSystem): Unit = {
     import actorSystem.dispatcher
     val startTime = System.nanoTime
-    implicit val timeout = Timeout((boot.listeners.size * 5) seconds)
+    implicit val to = listenerTimeout
     val ackFutures =
       for ((listenerName, config) <- boot.listeners) yield {
-        Unicomplex(actorSystem).uniActor ? StartListener(listenerName, config)
+        val responseFuture = Unicomplex(actorSystem).uniActor ? StartListener(listenerName, config)
+        responseFuture.onComplete {
+          case Failure(t) if (t.isInstanceOf[TimeoutException]) =>
+            logger.error(s"The Unicomplex could not start the listener, $listenerName, within $to.", t)
+          case Failure(t) =>
+            logger.error(s"The Unicomplex failed to start the listener, $listenerName.", t)
+          case Success(StartFailure(t)) =>
+            logger.error(s"The Unicomplex reported a start failure for the listener, $listenerName.", t)
+          case _ =>
+        }
+        responseFuture
       }
+
     // Block for the web service to be started.
     Await.ready(Future.sequence(ackFutures), timeout.duration)
 
@@ -476,14 +509,12 @@ object UnicomplexBoot extends LazyLogging {
     logger.info(s"Web Service started in $elapsed milliseconds")
   }
 
-  private[unicomplex] def getRootCause(e: Exception) = {
-    var t: Throwable = e
-    var cause = e.getCause
-    while (cause != null) {
-      t = cause
-      cause = t.getCause
+  @tailrec
+  private[unicomplex] def getRootCause(e: Throwable): Throwable = {
+    Option(e.getCause) match {
+      case Some(ex) => getRootCause(ex)
+      case None => e
     }
-    t
   }
 }
 
@@ -519,7 +550,10 @@ case class UnicomplexBoot private[unicomplex](startTime: Timestamp,
     UnicomplexBoot.scanResources(resources map (new File(_).toURI.toURL), withClassPath)(this)
 
   def scanResources(resources: String*): UnicomplexBoot =
-    UnicomplexBoot.scanResources(resources map (new File(_).toURI.toURL), withClassPath = true)(this)
+    UnicomplexBoot.scanResources(resources map (new File(_).toURI.toURL))(this)
+
+  def scanResources(withClassPath: Boolean, resources: Array[String]): UnicomplexBoot =
+    scanResources(withClassPath, resources: _*)
 
   def initExtensions: UnicomplexBoot = {
 
@@ -621,7 +655,7 @@ case class UnicomplexBoot private[unicomplex](startTime: Timestamp,
     boot
   }
 
-  def registerExtensionShutdown(actorSystem: ActorSystem) {
+  def registerExtensionShutdown(actorSystem: ActorSystem): Unit = {
     if (extensions.nonEmpty) {
       actorSystem.registerOnTermination {
         // Run the shutdown in a different thread, not in the ActorSystem's onTermination thread.
@@ -631,7 +665,7 @@ case class UnicomplexBoot private[unicomplex](startTime: Timestamp,
         if (stopJVM) {
           val shutdownTimer = new Timer(true)
           shutdownTimer.schedule(new TimerTask {
-            def run() {
+            def run(): Unit = {
               System.exit(0)
             }
           }, 5000)
@@ -642,8 +676,10 @@ case class UnicomplexBoot private[unicomplex](startTime: Timestamp,
         Future {
           extensions.reverse foreach { e =>
             import e.info._
-            e.extLifecycle foreach (_.shutdown())
-            logger.info(s"Shutting down extension ${e.extLifecycle.getClass.getName} in $fullName $version")
+            e.extLifecycle foreach { elc =>
+              logger.info(s"Shutting down extension ${elc.getClass.getName} in $fullName $version")
+              elc.shutdown()
+            }
           }
         } onComplete {
           case Success(result) =>
@@ -664,7 +700,7 @@ case class UnicomplexBoot private[unicomplex](startTime: Timestamp,
       val extLifecycle = ExtensionLifecycle(this) { clazz.asSubclass(classOf[ExtensionLifecycle]).newInstance }
       Extension(cube.info, seqNo, Some(extLifecycle), Seq.empty)
     } catch {
-      case e: Exception =>
+      case NonFatal(e) =>
         import cube.info._
         val t = getRootCause(e)
         logger.warn(s"Can't load extension $className.\n" +
@@ -688,7 +724,7 @@ case class UnicomplexBoot private[unicomplex](startTime: Timestamp,
           logger.info(s"Success $opName extension ${l.getClass.getName} in $fullName $version")
           extension
         } catch {
-          case e: Exception =>
+          case NonFatal(e) =>
             val t = getRootCause(e)
             logger.warn(s"Error on $opName extension ${l.getClass.getName}\n" +
               s"Cube: $fullName $version\n" +

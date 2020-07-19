@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -16,12 +16,14 @@
 
 package org.squbs.testkit;
 
-import akka.actor.UntypedActor;
+import akka.actor.AbstractActor;
 
-public class TestActorJ extends UntypedActor {
-    public void onReceive(Object msg) {
-        if ("Ping".equals(msg)) {
-            getSender().tell("Pong", getSelf());
-        }
+public class TestActorJ extends AbstractActor {
+
+    @Override
+    public Receive createReceive() {
+        return receiveBuilder()
+                .matchEquals("Ping", s -> getSender().tell("Pong", getSelf()))
+                .build();
     }
 }

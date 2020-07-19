@@ -1,208 +1,97 @@
 /*
- *  Copyright 2015 PayPal
+ * Copyright 2017 PayPal
  *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *  http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package org.squbs.pipeline
 
-import akka.actor._
-import spray.http._
+import java.util.Optional
 
-import scala.collection.JavaConversions._
+import akka.http.javadsl.{model => jm}
+import akka.http.scaladsl.{model => sm}
+import scala.annotation.varargs
+import scala.collection.JavaConverters._
+import scala.compat.java8.OptionConverters._
+import scala.util.Try
 
-case class RequestContext(request: HttpRequest,
-                          isChunkedRequest: Boolean = false,
-                          response: ProxyResponse = ResponseNotReady,
-                          attributes: Map[String, Any] = Map.empty) {
-  //Store any other data
-  def attribute[T](key: String): Option[T] = {
-    attributes.get(key) flatMap (v => Option(v).asInstanceOf[Option[T]])
-  }
+object RequestContext {
 
-  def payload = {
-    isChunkedRequest match {
-      case true => ChunkedRequestStart(request)
-      case false => request
-    }
-  }
+  def apply(request: sm.HttpRequest, httpPipeliningOrder: Long): RequestContext =
+    new RequestContext(request, httpPipeliningOrder)
 
-  //add some context attributes
-  def +>(attributes: (String, Any)*): RequestContext = {
+  /**
+    * Java API
+    */
+  def create(request: jm.HttpRequest, httpPipeliningOrder: Long): RequestContext =
+    apply(request.asInstanceOf[sm.HttpRequest], httpPipeliningOrder)
+
+}
+
+case class RequestContext private (request: sm.HttpRequest,
+                                   httpPipeliningOrder: Long,
+                                   response: Option[Try[sm.HttpResponse]] = None,
+                                   attributes: Map[String, Any] = Map.empty) {
+
+  def withResponse(response: Try[jm.HttpResponse]): RequestContext =
+    copy(response = Option(response.map(_.asInstanceOf[sm.HttpResponse])))
+
+  def withAttribute(name: String, value: Any): RequestContext =
+    this.copy(attributes = this.attributes + (name -> value))
+
+  def withAttributes(attributes: (String, Any)*): RequestContext = withAttributes(attributes.toMap)
+
+  /**
+    * Java API
+    */
+  def withAttributes(attributes: java.util.Map[String, Any]): RequestContext = withAttributes(attributes.asScala.toMap)
+
+  def removeAttribute(name: String): RequestContext = removeAttributes(name)
+
+  @varargs
+  def removeAttributes(names: String*): RequestContext = this.copy(attributes = this.attributes -- names)
+
+  def withRequestHeader(header: jm.HttpHeader): RequestContext = withRequestHeaders(header)
+
+  @varargs
+  def withRequestHeaders(headers: jm.HttpHeader*): RequestContext = copy(request = request.addHeaders(headers.asJava))
+
+  def withResponseHeader(header: jm.HttpHeader): RequestContext = withResponseHeaders(header)
+
+  @varargs
+  def withResponseHeaders(headers: jm.HttpHeader*): RequestContext =
+    copy(response = response.map(_.map(_.addHeaders(headers.asJava))))
+
+  def abortWith(httpResponse: jm.HttpResponse): RequestContext =
+    copy(response = Option(Try(httpResponse.asInstanceOf[sm.HttpResponse])))
+
+  def attribute[T](key: String): Option[T] = attributes.get(key) flatMap (v => Option(v).asInstanceOf[Option[T]])
+
+  /**
+    * Java API
+    */
+  def getAttribute[T](key: String): Optional[T] = attribute(key).asJava
+
+  /**
+    Java API
+   */
+  def getRequest: jm.HttpRequest = request
+
+  /**
+    * Java API
+    */
+  def getResponse: Optional[Try[jm.HttpResponse]] = response.map(_.map(_.asInstanceOf[jm.HttpResponse])).asJava
+
+  private def withAttributes(attributes: Map[String, Any]): RequestContext =
     this.copy(attributes = this.attributes ++ attributes)
-  }
-
-  /*
-  Java API
-   */
-  def withAttributes(attributes: java.util.List[(String, Any)]): RequestContext = {
-    +>(attributes: _*)
-  }
-
-  //remove some context attributes
-  def ->(attributeKeys: String*): RequestContext = {
-    this.copy(attributes = this.attributes -- attributeKeys)
-  }
-
-    /*
-  Java API
-   */
-  def removeAttributes(attributeKeys: java.util.List[String]): RequestContext = {
-    ->(attributeKeys: _*)
-  }
-
-  def responseReady: Boolean = response match {
-    case nr: NormalResponse => true
-    case er: ExceptionalResponse => true
-    case _ => false
-  }
-
-  def addResponseHeaders(headers: HttpHeader*): RequestContext = {
-    response match {
-      case nr@NormalResponse(r) =>
-        copy(response = nr.update(r.copy(headers = r.headers ++ headers)))
-
-      case er@ExceptionalResponse(r, _, _) =>
-        copy(response = er.copy(response = r.copy(headers = r.headers ++ headers)))
-
-      case other => this //do nothing
-    }
-  }
-
-  def addResponseHeader(header: HttpHeader): RequestContext = {
-    addResponseHeaders(header)
-  }
-
-  def addRequestHeaders(headers: HttpHeader*): RequestContext = {
-    copy(request = request.copy(headers = request.headers ++ headers))
-  }
-
-  def addRequestHeader(header: HttpHeader): RequestContext = {
-    copy(request = request.copy(headers = request.headers :+ header))
-  }
-
 }
-
-// $COVERAGE-OFF$
-sealed trait ProxyResponse
-
-object ProxyResponse {
-
-  implicit class PipeCopyHelper(val response: ProxyResponse) extends AnyVal {
-    def +(header: HttpHeader): ProxyResponse = {
-      response match {
-        case n@NormalResponse(resp) =>
-          n.update(resp.copy(headers = header :: resp.headers))
-        case e: ExceptionalResponse =>
-          e.copy(response = e.response.copy(headers = header :: e.response.headers))
-        case other => other
-      }
-    }
-
-    def -(header: HttpHeader): ProxyResponse = {
-      response match {
-        case n@NormalResponse(resp) =>
-          val originHeaders = resp.headers.groupBy[Boolean](_.name == header.name)
-          n.update(resp.copy(headers = originHeaders.getOrElse(false, List.empty)))
-        case e: ExceptionalResponse =>
-          val originHeaders = e.response.headers.groupBy[Boolean](_.name == header.name)
-          e.copy(response = e.response.copy(headers = originHeaders.getOrElse(false, List.empty)))
-        case other => other
-      }
-    }
-  }
-
-}
-
-object ResponseNotReady extends ProxyResponse
-
-// $COVERAGE-ON$
-
-case class ExceptionalResponse(response: HttpResponse = ExceptionalResponse.defaultErrorResponse,
-                               cause: Option[Throwable] = None,
-                               original: Option[NormalResponse] = None) extends ProxyResponse
-
-object ExceptionalResponse {
-
-  val defaultErrorResponse = HttpResponse(status = StatusCodes.InternalServerError, entity = "Service Error!")
-
-  def apply(t: Throwable): ExceptionalResponse = apply(t, None)
-
-  def apply(t: Throwable, originalResp: Option[NormalResponse]): ExceptionalResponse = {
-    val message = Option(t.getMessage) flatMap { m => if (m == "") None else Some(m) } getOrElse "Service Error!"
-    ExceptionalResponse(HttpResponse(status = StatusCodes.InternalServerError, entity = message),
-                        cause = Option(t), original = originalResp)
-  }
-}
-
-// $COVERAGE-OFF$
-case class AckInfo(rawAck: Any, receiver: ActorRef)
-
-sealed trait NormalResponse extends ProxyResponse {
-  def responseMessage: HttpMessagePartWrapper
-
-  def data: HttpResponsePart
-
-  def update(newData: HttpResponsePart): NormalResponse
-}
-
-// $COVERAGE-ON$
-
-sealed abstract class BaseNormalResponse(data: HttpResponsePart) extends NormalResponse {
-
-  def validateUpdate(newData: HttpResponsePart): HttpResponsePart = {
-    data match {
-      case r: ChunkedResponseStart if newData.isInstanceOf[HttpResponse] => ChunkedResponseStart(newData.asInstanceOf[HttpResponse])
-      case other if newData.getClass == data.getClass => newData
-      case other => throw new IllegalArgumentException(s"The updated data has type:${newData.getClass}, but the original data has type:${data.getClass}")
-    }
-  }
-}
-
-private case class DirectResponse(data: HttpResponsePart) extends BaseNormalResponse(data) {
-  def responseMessage: HttpMessagePartWrapper = data
-
-  def update(newData: HttpResponsePart): NormalResponse = copy(validateUpdate(newData))
-}
-
-private case class ConfirmedResponse(data: HttpResponsePart,
-                                     ack: Any,
-                                     source: ActorRef) extends BaseNormalResponse(data) {
-  override def responseMessage: HttpMessagePartWrapper = Confirmed(data, AckInfo(ack, source))
-
-  def update(newData: HttpResponsePart): NormalResponse = copy(validateUpdate(newData))
-}
-
-object NormalResponse {
-  def apply(resp: HttpResponse): NormalResponse = DirectResponse(resp)
-
-  def apply(chunkStart: ChunkedResponseStart): NormalResponse = DirectResponse(chunkStart)
-
-  def apply(chunkMsg: MessageChunk): NormalResponse = DirectResponse(chunkMsg)
-
-  def apply(chunkEnd: ChunkedMessageEnd): NormalResponse = DirectResponse(chunkEnd)
-
-  def apply(confirm: Confirmed, from: ActorRef): NormalResponse = confirm match {
-    case Confirmed(r@(_: HttpResponsePart), ack) => ConfirmedResponse(r, ack, from)
-    case other => throw new IllegalArgumentException("Unsupported confirmed message: " + confirm.messagePart)
-  }
-
-  def unapply(resp: NormalResponse): Option[HttpResponse] = {
-    resp.data match {
-      case r: HttpResponse => Some(r)
-      case ChunkedResponseStart(r) => Some(r)
-      case other => None
-    }
-  }
-}
-

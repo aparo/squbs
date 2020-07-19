@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -17,27 +17,30 @@
 package org.squbs.unicomplex
 
 import javax.net.ssl.SSLContext
+
 import akka.actor.Actor._
-import akka.actor.{ActorRef, ActorContext}
+import akka.actor.{ActorContext, ActorRef}
 import akka.event.LoggingAdapter
 import com.typesafe.config.Config
-import org.squbs.pipeline.streaming.PipelineSetting
-import org.squbs.unicomplex.ConfigUtil._
+import org.squbs.pipeline.PipelineSetting
+import org.squbs.util.ConfigUtil._
 
 import scala.concurrent.ExecutionContext
 import scala.collection.mutable.ListBuffer
+import scala.util.control.NonFatal
+import scala.collection.JavaConverters._
 
 trait ServiceRegistryBase[A] {
 
   val log: LoggingAdapter
 
-  protected def listenerRoutes: Map[String, Seq[(A, ActorWrapper, PipelineSetting)]]
+  protected def listenerRoutes: Map[String, Seq[(A, FlowWrapper, PipelineSetting)]]
 
-  protected def listenerRoutes_=[B](newListenerRoutes: Map[String, Seq[(B, ActorWrapper, PipelineSetting)]]): Unit
+  protected def listenerRoutes_=[B](newListenerRoutes: Map[String, Seq[(B, FlowWrapper, PipelineSetting)]]): Unit
 
-  private[unicomplex] def prepListeners(listenerNames: Iterable[String])(implicit context: ActorContext) {
+  private[unicomplex] def prepListeners(listenerNames: Iterable[String])(implicit context: ActorContext): Unit = {
     listenerRoutes = listenerNames.map { listener =>
-      listener -> Seq.empty[(A, ActorWrapper, PipelineSetting)]
+      listener -> Seq.empty[(A, FlowWrapper, PipelineSetting)]
     }.toMap
 
     import org.squbs.unicomplex.JMX._
@@ -47,7 +50,7 @@ trait ServiceRegistryBase[A] {
 
   protected def listenerStateMXBean(): ListenerStateMXBean
 
-  private[unicomplex] def registerContext(listeners: Iterable[String], webContext: String, servant: ActorWrapper,
+  private[unicomplex] def registerContext(listeners: Iterable[String], webContext: String, servant: FlowWrapper,
                                           ps: PipelineSetting)(implicit context: ActorContext): Unit
 
   protected def pathCompanion(s: String): A
@@ -59,7 +62,7 @@ trait ServiceRegistryBase[A] {
 
     listenerRoutes = listenerRoutes flatMap {
       case (listener, routes) => webContexts map { ctx =>
-        val buffer = ListBuffer[(A, ActorWrapper, PipelineSetting)]()
+        val buffer = ListBuffer[(A, FlowWrapper, PipelineSetting)]()
         val path = pathCompanion(ctx)
         routes.foreach {
           entry => if (!entry._1.equals(path)) buffer += entry
@@ -90,7 +93,7 @@ trait ServiceRegistryBase[A] {
                         ssLContext: Option[SSLContext], needClientAuth: Boolean)
 
   protected def bindConfig(config: Config): BindConfig = {
-    val interface = if (config getBoolean "full-address") ConfigUtil.ipv4
+    val interface = if (config getBoolean "full-address") org.squbs.util.ConfigUtil.ipv4
     else config getString "bind-address"
     val port = config getInt "bind-port"
     // assign the localPort only if local-port-header is true
@@ -109,7 +112,7 @@ trait ServiceRegistryBase[A] {
               val clazz = Class.forName(sslContextClassName)
               clazz.getMethod("getServerSslContext").invoke(clazz.newInstance()).asInstanceOf[SSLContext]
             } catch {
-              case e: Throwable =>
+              case NonFatal(e) =>
                 log.error(e, s"Failure obtaining SSLContext from $sslContextClassName.")
                 throw e
             }
@@ -144,18 +147,20 @@ trait ServiceRegistryBase[A] {
           }
       }
       if (!added) buffer += newMember
-      buffer.toSeq
+      buffer
     }
   }
 }
 
-object WebContext {
+case class RegisterContext(listeners: Seq[String], webContext: String, handler: FlowWrapper, ps: PipelineSetting)
+
+object WithWebContext {
 
   private[unicomplex] val localContext = new ThreadLocal[Option[String]] {
     override def initialValue(): Option[String] = None
   }
 
-  def createWithContext[T](webContext: String)(fn: => T): T = {
+  def apply[T](webContext: String)(fn: => T): T = {
     localContext.set(Some(webContext))
     val r = fn
     localContext.set(None)
@@ -165,17 +170,16 @@ object WebContext {
 }
 
 trait WebContext {
-  protected final val webContext: String = WebContext.localContext.get.get
+  protected final val webContext: String = WithWebContext.localContext.get.get
 }
 
-class ListenerBean[A](listenerRoutes: => Map[String, Seq[(A, ActorWrapper, PipelineSetting)]]) extends ListenerMXBean {
+class ListenerBean[A](listenerRoutes: => Map[String, Seq[(A, FlowWrapper, PipelineSetting)]]) extends ListenerMXBean {
 
   override def getListeners: java.util.List[ListenerInfo] = {
-    import scala.collection.JavaConversions._
     listenerRoutes.flatMap { case (listenerName, routes) =>
       routes map { case (webContext, servant, _) => // TODO Pass PipelineSetting
-        ListenerInfo(listenerName, webContext.toString(), servant.actor.toString())
+        ListenerInfo(listenerName, webContext.toString, servant.actor.toString)
       }
-    }.toSeq
+    }.toSeq.asJava
   }
 }

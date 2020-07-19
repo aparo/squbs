@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import akka.actor.ActorSystem
 import akka.pattern.ask
 import akka.util.Timeout
 import org.squbs.lifecycle.GracefulStop
-import ConfigUtil._
+import org.squbs.util.ConfigUtil._
 
 import scala.concurrent.Await
 import scala.concurrent.duration._
@@ -46,24 +46,27 @@ object Bootstrap extends App {
 object Shutdown extends App {
   shutdown(actorSystemName = args.headOption)
 
-  def shutdown(delayParameter: Option[FiniteDuration] = None, actorSystemName: Option[String] = None) {
+  def shutdown(delayParameter: Option[FiniteDuration] = None, actorSystemName: Option[String] = None): Unit = {
     val name = actorSystemName getOrElse {
       val preConfig = UnicomplexBoot.getFullConfig(None)
       preConfig.getString("squbs.actorsystem-name")
     }
-    val actorSystem = UnicomplexBoot.actorSystems(name)
-    val delay = delayParameter orElse
-      actorSystem.settings.config.getOption[FiniteDuration]("squbs.shutdown-delay") getOrElse Duration.Zero
-    implicit val squbsStopTimeout = Timeout(actorSystem.settings.config.get[FiniteDuration]("squbs.default-stop-timeout", 3 seconds))
-    val systemState = (Unicomplex(actorSystem).uniActor ? SystemState).mapTo[LifecycleState]
+    UnicomplexBoot.actorSystems.get(name) map { actorSystem =>
+      val delay = delayParameter orElse
+        actorSystem.settings.config.getOption[FiniteDuration]("squbs.shutdown-delay") getOrElse Duration.Zero
+      implicit val squbsStopTimeout = Timeout(actorSystem.settings.config.get[FiniteDuration]("squbs.default-stop-timeout", 3.seconds))
+      val systemState = (Unicomplex(actorSystem).uniActor ? SystemState).mapTo[LifecycleState]
 
-    import actorSystem.dispatcher
+      import actorSystem.dispatcher
 
-    systemState.onComplete {
-      case Success(Stopping | Stopped) | Failure(_)=> // Termination already started/happened.  Do nothing!
-      case _ => actorSystem.scheduler.scheduleOnce(delay, Unicomplex(name), GracefulStop)
+      systemState.onComplete {
+        case Success(Stopping | Stopped) | Failure(_) => // Termination already started/happened.  Do nothing!
+        case _ => actorSystem.scheduler.scheduleOnce(delay, Unicomplex(name), GracefulStop)
+      }
+
+      Try {
+        Await.ready(actorSystem.whenTerminated, delay + squbsStopTimeout.duration + (1 second))
+      }
     }
-
-    Try { Await.ready(actorSystem.whenTerminated, delay + squbsStopTimeout.duration + (1 second)) }
   }
 }

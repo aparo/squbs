@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 PayPal
+ * Copyright 2017 PayPal
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,9 +18,8 @@ package org.squbs.testkit
 
 import akka.actor.Actor
 import com.typesafe.config.ConfigFactory
-import org.scalatest.{Matchers, FlatSpecLike}
-import org.squbs.unicomplex.{RouteDefinition, UnicomplexBoot, JMX}
-import spray.routing.Directives._
+import org.scalatest.{FlatSpecLike, Matchers}
+import org.squbs.unicomplex.{JMX, RouteDefinition, UnicomplexBoot}
 
 import scala.util.{Failure, Success}
 
@@ -204,9 +203,9 @@ class ReverserActor extends Actor {
 }
 
 class ReverserRoute extends RouteDefinition {
-  import akka.pattern.ask
+
   import Timeouts._
-  import context.dispatcher
+  import akka.pattern.ask
 
   val route =
     path("msg" / Segment) { msg =>

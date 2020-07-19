@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -21,19 +21,23 @@ import java.util.concurrent.atomic.AtomicInteger
 
 import akka.actor.ActorSystem
 import akka.testkit.{ImplicitSender, TestKit}
-import com.typesafe.config.{Config, ConfigFactory}
+import com.typesafe.config.{Config, ConfigFactory, ConfigObject}
 import org.scalatest.{BeforeAndAfterAll, Suite}
 import org.squbs.lifecycle.GracefulStop
-import org.squbs.unicomplex.{UnicomplexBoot, JMX, Unicomplex}
+import org.squbs.unicomplex.{JMX, Unicomplex, UnicomplexBoot}
+import org.squbs.util.ConfigUtil._
+
 import scala.concurrent.Await
 import scala.concurrent.duration.FiniteDuration
+import scala.collection.JavaConverters._
+import scala.util.Try
 
 object CustomTestKit {
 
-  val actorSystems = collection.concurrent.TrieMap.empty[String, ActorSystem]
+  private[testkit] val actorSystems = collection.concurrent.TrieMap.empty[String, ActorSystem]
 
-  private[testkit] def checkInit(actorSystem: ActorSystem) {
-    if (actorSystems.putIfAbsent(actorSystem.name, actorSystem) == None)
+  private[testkit] def checkInit(actorSystem: ActorSystem): Unit = {
+    if (actorSystems.putIfAbsent(actorSystem.name, actorSystem).isEmpty)
       sys.addShutdownHook {
         val stopTimeoutInMs = actorSystem.settings.config.getDuration("squbs.default-stop-timeout", TimeUnit.MILLISECONDS)
         Await.ready(actorSystem.terminate(), FiniteDuration(stopTimeoutInMs, TimeUnit.MILLISECONDS))
@@ -43,27 +47,75 @@ object CustomTestKit {
   // JUnit creates a new object for each @Test method.  To prevent actor system name collisions, appending an integer
   // to the actor system name.
   val counter = new AtomicInteger(0)
-  val stackTraceDepth = 6 // CustomTestKit$ x 3 -> Option -> CustomTestKit$ -> CustomTestKit -> Spec
+  val stackTraceDepth =
+    if (util.Properties.versionNumberString.startsWith("2.12")) 5 // scala 2.12 - CustomTestKit$ x 2 -> Option -> CustomTestKit$ -> CustomTestKit -> Spec
+    else 6 // scala 2.11 - CustomTestKit$ x 3 -> Option -> CustomTestKit$ -> CustomTestKit -> Spec
+  /* Example stack trace:
+
+    java.lang.Exception
+      at org.squbs.testkit.CustomTestKit$.defaultActorSystemName(CustomTestKit.scala:52)
+      at org.squbs.testkit.CustomTestKit$.$anonfun$boot$1(CustomTestKit.scala:109)
+      at scala.Option.getOrElse(Option.scala:121)
+      at org.squbs.testkit.CustomTestKit$.boot(CustomTestKit.scala:109)
+      at org.squbs.testkit.CustomTestKit.<init>(CustomTestKit.scala:128)
+      at org.squbs.testkit.CustomTestKitDefaultSpec.<init>(CustomTestKitSpec.scala:60)
+      at sun.reflect.NativeConstructorAccessorImpl.newInstance0(Native Method)
+      at sun.reflect.NativeConstructorAccessorImpl.newInstance(NativeConstructorAccessorImpl.java:62)
+      at sun.reflect.DelegatingConstructorAccessorImpl.newInstance(DelegatingConstructorAccessorImpl.java:45)
+      at java.lang.reflect.Constructor.newInstance(Constructor.java:423)
+      at java.lang.Class.newInstance(Class.java:442)
+ */
   def defaultActorSystemName =
     s"${actorSystemNameFrom((new Exception).getStackTrace.apply(stackTraceDepth).getClassName)}-${counter.getAndIncrement()}"
 
-  def actorSystemNameFrom(className: String) =
+  def actorSystemNameFrom(className: String): String =
     className
       .replace('.', '-')
       .replace('_', '-')
       .filter(_ != '$')
 
-  val defaultResource = Seq(getClass.getClassLoader.getResource("").getPath + "/META-INF/squbs-meta.conf")
+  /**
+    * Detects default resources for this test. These are usually at two locations:
+    * <ul>
+    *   <li>$project-path/target/scala-2.11/classes/META-INF/squbs-meta.conf</li>
+    *   <li>$project-path/target/scala-2.11/test-classes/META-INF/squbs-meta.conf</li>
+    * </ul>
+    * @return The list of detected resources
+    */
+  val defaultResources: Seq[String] = {
+    val loader = getClass.getClassLoader
+    val resourceHome = loader.getResource("").getPath
+    val lastSlashOption = Try {
+      if (resourceHome endsWith "/") resourceHome.lastIndexOf("/", resourceHome.length - 2)
+      else resourceHome.lastIndexOf("/")
+    }   .toOption.filter { _ > 0 }
+    val targetPathOption = lastSlashOption map { lastSlash => resourceHome.substring(0, lastSlash + 1) }
 
-  def defaultConfig(actorSystemName: String) = ConfigFactory.parseString(
-    s"""
-       |squbs {
-       |  actorsystem-name = ${actorSystemName}
-       |  ${JMX.prefixConfig} = true
-       |}
-       |default-listener.bind-port = 0
-    """.stripMargin
-  )
+    targetPathOption map { targetPath =>
+      Seq("conf", "json", "properties")
+        .flatMap { ext => loader.getResources(s"META-INF/squbs-meta.$ext").asScala }
+        .map { _.getPath}
+        .filter { _.startsWith(targetPath) }
+    } getOrElse Seq.empty
+  }
+
+  def defaultConfig(actorSystemName: String): Config = {
+    val baseConfig = ConfigFactory.load()
+    val listeners = baseConfig.root.asScala.toSeq.collect {
+      case (n, v: ConfigObject) if v.toConfig.getOption[String]("type").contains("squbs.listener") => n
+    }
+
+    val portOverrides = listeners.map { listener => s"$listener.bind-port = 0" }   .mkString("\n")
+
+    ConfigFactory.parseString(
+      s"""
+         |squbs {
+         |  actorsystem-name = $actorSystemName
+         |  ${JMX.prefixConfig} = true
+         |}
+      """.stripMargin + portOverrides
+    )
+  }
 
   def boot(actorSystemName: Option[String] = None,
            config: Option[Config] = None,
@@ -73,10 +125,11 @@ object CustomTestKit {
     boot(config.map(_.withFallback(baseConfig)).getOrElse(baseConfig), resources, withClassPath)
   }
 
-  def boot(config: Config, resources: Option[Seq[String]], withClassPath: Option[Boolean]) = UnicomplexBoot(config)
-    .createUsing {(name, config) => ActorSystem(name, config)}
-    .scanResources(withClassPath.getOrElse(false), resources.getOrElse(defaultResource):_*)
-    .initExtensions.start()
+  private def boot(config: Config, resources: Option[Seq[String]], withClassPath: Option[Boolean]): UnicomplexBoot =
+    UnicomplexBoot(config)
+      .createUsing {(name, config) => ActorSystem(name, config)}
+      .scanResources(withClassPath.getOrElse(false), resources.getOrElse(defaultResources):_*)
+      .initExtensions.start()
 }
 
 /**
@@ -98,6 +151,10 @@ abstract class CustomTestKit(val boot: UnicomplexBoot) extends TestKit(boot.acto
     this(CustomTestKit.boot(config = Option(config)))
   }
 
+  def this(withClassPath: Boolean) {
+    this(CustomTestKit.boot(withClassPath = Option(withClassPath)))
+  }
+
   def this(resources: Seq[String], withClassPath: Boolean) {
     this(CustomTestKit.boot(resources = Option(resources), withClassPath = Option(withClassPath)))
   }
@@ -110,11 +167,11 @@ abstract class CustomTestKit(val boot: UnicomplexBoot) extends TestKit(boot.acto
     this(CustomTestKit.boot(config = Option(config), resources = Option(resources), withClassPath = Option(withClassPath)))
   }
 
-  override protected def beforeAll() {
+  override protected def beforeAll(): Unit = {
     CustomTestKit.checkInit(system)
   }
 
-  override protected def afterAll() {
+  override protected def afterAll(): Unit = {
     Unicomplex(system).uniActor ! GracefulStop
   }
 }

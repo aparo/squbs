@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -21,9 +21,13 @@ import java.util.concurrent.TimeUnit
 import akka.actor._
 import akka.pattern.GracefulStopSupport
 import org.squbs.unicomplex.{StopTimeout, Unicomplex}
+import org.squbs.util.DurationConverters
 
+import scala.compat.java8.FutureConverters._
+import scala.compat.java8.FunctionConverters._
+import scala.collection.JavaConverters._
 import scala.concurrent.Future
-import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.duration._
 import scala.util.{Failure, Success}
 
 case object GracefulStop
@@ -91,7 +95,9 @@ trait GracefulStopHelper extends GracefulStopSupport with ActorLogging{this: Act
                                           timeout: FiniteDuration = stopTimeout / 2): Unit = {
 
     def stopDependencies(msg: Any) = {
-      Future.sequence(dependencies.map(gracefulStop(_, timeout, msg)))
+      // Note: We need to call the Java API as that will again call the Scala API.
+      // Any overrides will now come into picture.
+      Future.sequence(dependencies.map(gracefulStop(_, DurationConverters.toJava(timeout), msg).toScala))
     }
 
     stopDependencies(GracefulStop).onComplete({
@@ -103,10 +109,62 @@ trait GracefulStopHelper extends GracefulStopSupport with ActorLogging{this: Act
       // some dependencies are not terminated in the timeout
       // send them PoisonPill again
       case Failure(e) => log.warning(s"Graceful stop failed with $e in $timeout")
-        stopDependencies(PoisonPill).onComplete(_ => {
+        stopDependencies(PoisonPill).onComplete { _ =>
           // don't care at this time
           if (context != null) context stop self
-        })
+        }
     })
   }
+
+  /**
+   * Java API stopping non-leaf actors.
+   * @param dependencies All non-leaf actors to be stopped.
+   * @param timeout The timeout.
+   */
+  protected final def defaultMidActorStop(dependencies: java.util.List[ActorRef], timeout: java.time.Duration): Unit =
+    defaultMidActorStop(dependencies.asScala, DurationConverters.toScala(timeout))
+
+  /**
+   * Java API stopping non-leaf actors with default timeout.
+   * @param dependencies All non-leaf actors to be stopped.
+   */
+  protected final def defaultMidActorStop(dependencies: java.util.List[ActorRef]): Unit =
+    defaultMidActorStop(dependencies.asScala)
+
+  /**
+   * Java API for gracefulStop.
+   * @param target The target actor to stop.
+   * @param timeout The timeout.
+   * @param stopMessage The message to send to the actor for stopping.
+   * @return A CompletionStage carrying `true` for success stopping the target.
+   */
+  protected def gracefulStop(target: ActorRef, timeout: java.time.Duration, stopMessage: Any):
+      java.util.concurrent.CompletionStage[java.lang.Boolean] =
+    gracefulStop(target, DurationConverters.toScala(timeout), stopMessage).toJava
+      .thenApply(asJavaFunction((t: Boolean) => t:java.lang.Boolean))
+
+  /**
+   * Java API for gracefulStop using the default message - PoisonPill.
+   * @param target The target actor to stop.
+   * @param timeout The timeout.
+   * @return A CompletionStage carrying `true` for success stopping the target.
+   */
+  protected final def gracefulStop(target: ActorRef, timeout: java.time.Duration):
+      java.util.concurrent.CompletionStage[java.lang.Boolean] =
+    gracefulStop(target, timeout, PoisonPill)
+}
+
+/**
+ * Java API for creating actors with GracefulStopHelper.
+ */
+abstract class ActorWithGracefulStopHelper extends AbstractActor with GracefulStopHelper {
+
+  /**
+   * Override getStopTimeout to set a custom stop timeout.
+   * @return The timeout, in milliseconds to allow for stopping the server.
+   */
+  def getStopTimeout: Long = super.stopTimeout.toMillis
+
+  override final def stopTimeout: FiniteDuration = getStopTimeout.millis
+
 }

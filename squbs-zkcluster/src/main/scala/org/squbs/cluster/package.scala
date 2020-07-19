@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -29,6 +29,8 @@ import org.apache.zookeeper.KeeperException.NodeExistsException
 
 import scala.language.implicitConversions
 import scala.util.Try
+import scala.util.control.NonFatal
+import scala.collection.JavaConverters._
 
 package object cluster {
 
@@ -56,15 +58,14 @@ package object cluster {
           zkClient.setData().forPath(path, data.get)
         }
         path
-      case e: Throwable =>
+      case NonFatal(e) =>
         logger.info("leader znode creation failed due to %s\n", e)
         path
     }
   }
 
   def safelyDiscard(path:String, recursive: Boolean = true)(implicit zkClient: CuratorFramework): String = Try {
-    import scala.collection.JavaConversions._
-    if(recursive) zkClient.getChildren.forPath(path).foreach(child => safelyDiscard(s"$path/$child", recursive))
+    if(recursive) zkClient.getChildren.forPath(path).asScala.foreach(child => safelyDiscard(s"$path/$child", recursive))
     zkClient.delete.forPath(path)
     path
   } getOrElse path

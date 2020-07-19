@@ -1,17 +1,17 @@
 /*
- *  Copyright 2015 PayPal
+ * Copyright 2017 PayPal
  *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *  http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package org.squbs.admin
@@ -25,11 +25,11 @@ import org.json4s.jackson.JsonMethods._
 import org.scalatest._
 
 import scala.beans.{BeanProperty, BooleanBeanProperty}
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 
 class MBeanUtilTest extends FunSpecLike with Matchers with BeforeAndAfterAll with Inspectors with OptionValues {
 
-  override def beforeAll() {
+  override def beforeAll(): Unit = {
 
     val testBean = TestBean("Hello", 123.456, Long.MaxValue, props03 = false,
       AnotherTestObject("Hi TestObject", props1 = true), Array(1.0f, 1.5f, 2.0f, 2.5f), Array(true, false, false, true),
@@ -37,7 +37,7 @@ class MBeanUtilTest extends FunSpecLike with Matchers with BeforeAndAfterAll wit
         AnotherTestObject("Hi TestObject2", props1 = false)), Array(KeyValueObject("foo", "bar"),
         KeyValueObject("foobar", "baz")),
       Map("foo" -> AnotherTestObject("Hi TestObject3", props1 = false),
-        "bar" -> AnotherTestObject("Hi TestObject4", props1 = true)))
+        "bar" -> AnotherTestObject("Hi TestObject4", props1 = true)).asJava)
 
     ManagementFactory.getPlatformMBeanServer.registerMBean(testBean,
       new ObjectName("org.squbs.admin.test:type=TestBean"))

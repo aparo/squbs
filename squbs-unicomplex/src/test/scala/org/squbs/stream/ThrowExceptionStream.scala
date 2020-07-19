@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -26,7 +26,9 @@ import akka.stream.scaladsl._
 import scala.concurrent.Future
 import scala.language.postfixOps
 
-case object NotifyWhenDone
+case object NotifyWhenDone {
+  def getInstance: NotifyWhenDone.type = this
+}
 
 object ThrowExceptionStream {
 

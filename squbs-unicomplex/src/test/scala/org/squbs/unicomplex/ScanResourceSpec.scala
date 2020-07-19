@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -23,16 +23,13 @@ import akka.actor.ActorSystem
 import akka.testkit.{ImplicitSender, TestKit}
 import akka.util.Timeout
 import com.typesafe.config.ConfigFactory
-import org.scalatest.concurrent.AsyncAssertions
+import org.scalatest.concurrent.Waiters
 import org.scalatest.{BeforeAndAfterAll, Inspectors, Matchers, WordSpecLike}
 import org.squbs.lifecycle.GracefulStop
-import spray.util.Utils
 
 import scala.util.Try
 
 object ScanResourceSpec {
-
-  val (_, port) = Utils.temporaryServerHostnameAndPort()
 
   val jmxPrefix = "ScanResourceSpec"
 
@@ -43,7 +40,7 @@ object ScanResourceSpec {
        |  ${JMX.prefixConfig} = true
        |}
        |
-       |default-listener.bind-port = $port
+       |default-listener.bind-port = 0
     """.stripMargin)
 
   implicit val akkaTimeout: Timeout =
@@ -58,7 +55,7 @@ object ScanResourceSpec {
 }
 
 class ScanResourceSpec extends TestKit(ScanResourceSpec.boot.actorSystem) with ImplicitSender with WordSpecLike
-    with Matchers with Inspectors with BeforeAndAfterAll with AsyncAssertions {
+    with Matchers with Inspectors with BeforeAndAfterAll with Waiters {
 
   import ScanResourceSpec._
   import system.dispatcher

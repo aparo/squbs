@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -30,10 +30,10 @@ import static org.squbs.pattern.orchestration.japi.Messages.*;
 public class SelectionOrchestrator extends AbstractOrchestrator {
 
     public SelectionOrchestrator() {
-        getContext().actorOf(Props.create(ServiceEmulator.class), "ServiceEmulator");
-        expectOnce(ReceiveBuilder.match(TestRequest.class,
+        context().actorOf(Props.create(ServiceEmulator.class), "ServiceEmulator");
+        expectOnce(ReceiveBuilder.create().match(TestRequest.class,
                 testRequest -> orchestrate(testRequest, sender())
-        ).build());
+        ).build().onMessage());
     }
 
     protected void orchestrate(TestRequest request, ActorRef requester) {

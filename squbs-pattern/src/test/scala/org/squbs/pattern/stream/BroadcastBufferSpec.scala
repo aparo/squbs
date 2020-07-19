@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -23,7 +23,6 @@ import akka.stream.scaladsl.{Broadcast, Flow, GraphDSL, Keep, RunnableGraph, Sin
 import akka.stream.{AbruptTerminationException, ActorMaterializer, ClosedShape, ThrottleMode}
 import akka.util.ByteString
 import org.scalatest.concurrent.Eventually
-import org.scalatest.time.{Millis, Seconds, Span}
 import org.scalatest.{BeforeAndAfterAll, FlatSpec, Matchers}
 import org.squbs.testkit.Timeouts._
 
@@ -31,16 +30,13 @@ import scala.concurrent.{Await, Promise}
 import scala.reflect._
 
 abstract class BroadcastBufferSpec[T: ClassTag, Q <: QueueSerializer[T] : Manifest]
-   (typeName: String, autoCommit: Boolean = true) extends FlatSpec with Matchers with BeforeAndAfterAll with Eventually {
+   (typeName: String) extends FlatSpec with Matchers with BeforeAndAfterAll with Eventually {
 
-  implicit val system = ActorSystem(s"Broadcast${typeName}BufferSpec")
+  implicit val system = ActorSystem(s"Broadcast${typeName}BufferSpec", PersistentBufferSpec.testConfig)
   implicit val mat = ActorMaterializer()
   implicit val serializer = QueueSerializer[T]()
   import StreamSpecUtil._
   import system.dispatcher
-
-  implicit override val patienceConfig =
-    PatienceConfig(timeout = scaled(Span(30, Seconds)), interval = scaled(Span(500, Millis)))
 
   def createElement(n: Int): T
 
@@ -53,18 +49,17 @@ abstract class BroadcastBufferSpec[T: ClassTag, Q <: QueueSerializer[T] : Manife
   }
 
   it should s"buffer a stream of $elementCount elements using GraphDSL" in {
-    val util = new StreamSpecUtil[T](2, autoCommit)
+    val util = new StreamSpecUtil[T, T](2)
     import util._
 
     val buffer = new BroadcastBuffer[T](config)
     val streamGraph = RunnableGraph.fromGraph(GraphDSL.create(flowCounter) { implicit builder =>
       sink =>
         import GraphDSL.Implicits._
-        val commit = buffer.commit[T] // makes a dummy flow if autocommit is set to false
         val bcBuffer = builder.add(buffer.async)
         val mr = builder.add(merge)
-        in ~> transform ~> bcBuffer ~> commit ~> mr ~> sink
-                           bcBuffer ~> commit ~> mr
+        in ~> transform ~> bcBuffer ~> mr ~> sink
+                           bcBuffer ~> mr
         ClosedShape
     })
     val countFuture = streamGraph.run()
@@ -76,9 +71,9 @@ abstract class BroadcastBufferSpec[T: ClassTag, Q <: QueueSerializer[T] : Manife
   }
 
   it should "buffer for a throttled stream" in {
-    val util = new StreamSpecUtil[T](2, autoCommit)
+    val util = new StreamSpecUtil[T, T](2)
     import util._
-    val throttleShape = Flow[Event[T]].throttle(flowRate * 10, flowUnit, burstSize * 10, ThrottleMode.shaping)
+    val throttleShape = Flow[T].throttle(flowRate * 10, flowUnit, burstSize * 10, ThrottleMode.shaping)
 
     var t1, t2 = Long.MinValue
     val t0 = System.nanoTime
@@ -92,13 +87,12 @@ abstract class BroadcastBufferSpec[T: ClassTag, Q <: QueueSerializer[T] : Manife
     val streamGraph = RunnableGraph.fromGraph(GraphDSL.create(counter(t1 = _)) { implicit builder =>
       sink =>
         import GraphDSL.Implicits._
-        val commit = buffer.commit[T] // makes a dummy flow if autocommit is set to false
         val bc = builder.add(Broadcast[T](2))
         val bcBuffer = builder.add(buffer.async)
         val mr = builder.add(merge)
         val throttle = builder.add(throttleShape)
-        in ~> transform ~> bc ~> bcBuffer ~> commit ~> mr ~> throttle ~> sink
-        bcBuffer ~> commit ~> mr
+        in ~> transform ~> bc ~> bcBuffer ~> mr ~> throttle ~> sink
+                                 bcBuffer ~> mr
         bc ~> counter(t2 = _)
         ClosedShape
     })
@@ -113,7 +107,7 @@ abstract class BroadcastBufferSpec[T: ClassTag, Q <: QueueSerializer[T] : Manife
   }
 
   it should "recover from unexpected stream shutdown" in {
-    implicit val util = new StreamSpecUtil[T](2, autoCommit)
+    implicit val util = new StreamSpecUtil[T, T](2)
     import util._
 
     val mat = ActorMaterializer()
@@ -132,13 +126,14 @@ abstract class BroadcastBufferSpec[T: ClassTag, Q <: QueueSerializer[T] : Manife
       Sink.ignore, Sink.ignore, fireFinished())((_,_,_)) { implicit builder =>
       (sink1, sink2, sink3) =>
         import GraphDSL.Implicits._
-        val buffer = new BroadcastBuffer[T](config).withOnPushCallback(() => bBufferInCount.incrementAndGet()).withOnCommitCallback(i => commitCounter(i))
-        val commit = buffer.commit[T] // makes a dummy flow if autocommit is set to false
+        val buffer = new BroadcastBuffer[T](config)
+          .withOnPushCallback(() => bBufferInCount.incrementAndGet())
+          .withOnCommitCallback(i => commitCounter(i))
         val bcBuffer = builder.add(buffer.async)
         val bc = builder.add(Broadcast[T](2))
 
-        in ~> transform ~> bc ~> bcBuffer ~> throttle ~> commit ~> sink1
-                                 bcBuffer ~> throttle ~> commit ~> sink2
+        in ~> transform ~> bc ~> bcBuffer ~> throttle ~> sink1
+                                 bcBuffer ~> throttleMore ~> sink2
                            bc ~> sink3
 
         ClosedShape
@@ -148,23 +143,37 @@ abstract class BroadcastBufferSpec[T: ClassTag, Q <: QueueSerializer[T] : Manife
     Await.result(sink1F.failed, awaitMax) shouldBe an[AbruptTerminationException]
     Await.result(sink2F.failed, awaitMax) shouldBe an[AbruptTerminationException]
 
-    val restartFrom = bBufferInCount.incrementAndGet()
+    var restartFrom = bBufferInCount.get
     println(s"Restart from count $restartFrom")
 
-    val beforeShutDown = SinkCounts(atomicCounter(0).get, atomicCounter(1).get)
+    var beforeShutDown = SinkCounts(atomicCounter(0).get, atomicCounter(1).get)
+
+    Thread.sleep(30)
+
+    // Ensure our counter readings are stable.
+    // The `AbruptTerminationException` may not signal the stream is totally stopped.
+    eventually {
+      val prevRestartFrom = restartFrom
+      val prevBeforeShutDown = beforeShutDown
+      restartFrom = bBufferInCount.get
+      beforeShutDown = SinkCounts(atomicCounter(0).get, atomicCounter(1).get)
+      restartFrom shouldBe prevRestartFrom
+      beforeShutDown shouldBe prevBeforeShutDown
+    }
+
     resumeGraphAndDoAssertion(beforeShutDown, restartFrom)
     clean()
   }
 
   it should "recover from downstream failure" in {
-    implicit val util = new StreamSpecUtil[T](2, autoCommit)
+    implicit val util = new StreamSpecUtil[T, T](2)
     import util._
 
     val mat = ActorMaterializer()
     val injectCounter = new AtomicInteger(0)
     val inCounter = new AtomicInteger(0)
 
-    val injectError = Flow[Event[T]].map { n =>
+    val injectError = Flow[T].map { n =>
       val count = injectCounter.incrementAndGet()
       if (count == failTestAt) throw new NumberFormatException("This is a fake exception")
       else n
@@ -173,12 +182,13 @@ abstract class BroadcastBufferSpec[T: ClassTag, Q <: QueueSerializer[T] : Manife
     val graph = RunnableGraph.fromGraph(
       GraphDSL.create(Sink.ignore, Sink.ignore)((_, _)) { implicit builder => (sink1, sink2) =>
           import GraphDSL.Implicits._
-          val buffer = new BroadcastBuffer[T](config).withOnPushCallback(() => inCounter.incrementAndGet()).withOnCommitCallback(i => commitCounter(i))
-          val commit = buffer.commit[T] // makes a dummy flow if autocommit is set to false
+          val buffer = new BroadcastBuffer[T](config)
+            .withOnPushCallback(() => inCounter.incrementAndGet())
+            .withOnCommitCallback(i => commitCounter(i))
           val bcBuffer = builder.add(buffer.async)
 
-          in ~> transform ~> bcBuffer ~> throttle ~> injectError ~> commit ~> sink1
-                             bcBuffer ~> throttle                ~> commit ~> sink2
+          in ~> transform ~> bcBuffer ~> throttle ~> injectError ~> sink1
+                             bcBuffer ~> throttle                ~> sink2
 
           ClosedShape
       })
@@ -196,7 +206,7 @@ abstract class BroadcastBufferSpec[T: ClassTag, Q <: QueueSerializer[T] : Manife
   }
 
   it should "recover from upstream failure" in {
-    implicit val util = new StreamSpecUtil[T](2, autoCommit)
+    implicit val util = new StreamSpecUtil[T, T](2)
     import util._
 
     val mat = ActorMaterializer()
@@ -210,11 +220,10 @@ abstract class BroadcastBufferSpec[T: ClassTag, Q <: QueueSerializer[T] : Manife
       GraphDSL.create(Sink.ignore, Sink.ignore)((_,_)) { implicit builder =>
         (sink1, sink2) =>
           import GraphDSL.Implicits._
-          val commit = buffer.commit[T] // makes a dummy flow if autocommit is set to false
           val bcBuffer = builder.add(buffer.async)
 
-          in ~> injectError ~> transform ~> bcBuffer ~> throttle ~> commit ~> sink1
-                                            bcBuffer ~> throttle ~> commit ~> sink2
+          in ~> injectError ~> transform ~> bcBuffer ~> throttle ~> sink1
+                                            bcBuffer ~> throttle ~> sink2
 
           ClosedShape
       })
@@ -229,7 +238,8 @@ abstract class BroadcastBufferSpec[T: ClassTag, Q <: QueueSerializer[T] : Manife
 
   case class SinkCounts(sink1: Long, sink2: Long)
 
-  private def resumeGraphAndDoAssertion(beforeShutDown: SinkCounts, restartFrom: Int)(implicit util: StreamSpecUtil[T]) = {
+  private def resumeGraphAndDoAssertion(beforeShutDown: SinkCounts, restartFrom: Int)
+                                       (implicit util: StreamSpecUtil[T, T]) = {
     import util._
     val buffer = new BroadcastBuffer[T](config)
     val graph = RunnableGraph.fromGraph(
@@ -238,20 +248,19 @@ abstract class BroadcastBufferSpec[T: ClassTag, Q <: QueueSerializer[T] : Manife
         (first1, first2, last1, last2) =>
           import GraphDSL.Implicits._
           val bcBuffer = builder.add(buffer.async)
-          val commit = buffer.commit[T] // makes a dummy flow if autocommit is set to false
-          val bc1 = builder.add(Broadcast[Event[T]](2))
-          val bc2 = builder.add(Broadcast[Event[T]](2))
+          val bc1 = builder.add(Broadcast[T](2))
+          val bc2 = builder.add(Broadcast[T](2))
           Source(restartFrom to (elementCount + elementsAfterFail)) ~> transform ~>
-            bcBuffer ~> commit ~> bc1 ~> first1
-          bc1 ~> last1
-            bcBuffer ~> commit ~> bc2 ~> first2
-          bc2 ~> last2
+            bcBuffer ~> bc1 ~> first1
+                        bc1 ~> last1
+            bcBuffer ~> bc2 ~> first2
+                        bc2 ~> last2
           ClosedShape
       })
     val (head1F, head2F, last1F, last2F) = graph.run()(ActorMaterializer())
     val head1 = Await.result(head1F, awaitMax)
     val head2 = Await.result(head2F, awaitMax)
-    println(s"First record processed after shutdown => ${(format(head1.entry), format(head2.entry))}")
+    println(s"First record processed after shutdown => ${(format(head1), format(head2))}")
     val last1 = Await.result(last1F, awaitMax)
     val last2 = Await.result(last2F, awaitMax)
     eventually { buffer.queue shouldBe 'closed }
@@ -350,82 +359,4 @@ class BroadcastPersonBufferSpec extends BroadcastBufferSpec[Person, PersonSerial
   def format(element: Person): String = element.toString
 }
 
-class BroadcastByteStringBufferNoAutoCommitSpec extends BroadcastBufferSpec[ByteString, ByteStringSerializer]("ByteString", false) {
-
-  def createElement(n: Int): ByteString = ByteString(s"Hello $n")
-
-  def format(element: ByteString): String = element.utf8String
-}
-
-class BroadcastStringBufferNoAutoCommitSpec extends BroadcastBufferSpec[String, ObjectSerializer[String]]("Object", false) {
-
-  def createElement(n: Int): String = s"Hello $n"
-
-  def format(element: String): String = element
-}
-
-class BroadcastLongBufferNoAutoCommitSpec extends BroadcastBufferSpec[Long, LongSerializer]("Long", false) {
-
-  def createElement(n: Int): Long = n
-
-  def format(element: Long): String = element.toString
-}
-
-class BroadcastIntBufferNoAutoCommitSpec extends BroadcastBufferSpec[Int, IntSerializer]("Int", false) {
-
-  def createElement(n: Int): Int = n
-
-  def format(element: Int): String = element.toString
-}
-
-class BroadcastShortBufferNoAutoCommitSpec extends BroadcastBufferSpec[Short, ShortSerializer]("Short", false) {
-
-  def createElement(n: Int): Short = n.toShort
-
-  def format(element: Short): String = element.toString
-}
-
-class BroadcastByteBufferNoAutoCommitSpec extends BroadcastBufferSpec[Byte, ByteSerializer]("Byte", false) {
-
-  def createElement(n: Int): Byte = n.toByte
-
-  def format(element: Byte): String = element.toString
-}
-
-class BroadcastCharBufferNoAutoCommitSpec extends BroadcastBufferSpec[Char, CharSerializer]("Char", false) {
-
-  def createElement(n: Int): Char = n.toChar
-
-  def format(element: Char): String = element.toString
-}
-
-class BroadcastDoubleBufferNoAutoCommitSpec extends BroadcastBufferSpec[Double, DoubleSerializer]("Double", false) {
-
-  def createElement(n: Int): Double = n.toDouble
-
-  def format(element: Double): String = element.toString
-}
-
-class BroadcastFloatBufferNoAutoCommitSpec extends BroadcastBufferSpec[Float, FloatSerializer]("Float", false) {
-
-  def createElement(n: Int): Float = n.toFloat
-
-  def format(element: Float): String = element.toString
-}
-
-class BroadcastBooleanBufferNoAutoCommitSpec extends BroadcastBufferSpec[Boolean, BooleanSerializer]("Boolean", false) {
-
-  def createElement(n: Int): Boolean = n % 2 == 0
-
-  def format(element: Boolean): String = element.toString
-}
-
-class BroadcastPersonBufferNoAutoCommitSpec extends BroadcastBufferSpec[Person, PersonSerializer]("Person", false) {
-
-  override implicit val serializer = new PersonSerializer()
-
-  def createElement(n: Int): Person = Person(s"John Doe $n", 20)
-
-  def format(element: Person): String = element.toString
-}
 

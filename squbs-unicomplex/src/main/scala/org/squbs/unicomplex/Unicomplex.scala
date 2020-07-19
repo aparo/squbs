@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -21,27 +21,33 @@ import java.io.{PrintWriter, StringWriter}
 import java.util
 import java.util.Date
 import java.util.concurrent.ConcurrentHashMap
+import javax.management.ObjectName
 
+import akka.NotUsed
 import akka.actor.SupervisorStrategy._
 import akka.actor.{Extension => AkkaExtension, _}
 import akka.agent.Agent
+import akka.event.Logging
+import akka.http.scaladsl.model.HttpResponse
 import akka.pattern._
-import akka.util.Timeout
+import akka.stream.{ActorMaterializer, ActorMaterializerSettings, Materializer, Supervision}
+import akka.stream.scaladsl.Flow
 import com.typesafe.config.Config
 import org.squbs.lifecycle.{ExtensionLifecycle, GracefulStop, GracefulStopHelper}
-import org.squbs.pipeline.PipelineManager
-import org.squbs.pipeline.streaming.PipelineSetting
-import org.squbs.proxy.CubeProxyActor
+import org.squbs.pipeline.{PipelineSetting, RequestContext}
 import org.squbs.unicomplex.UnicomplexBoot.StartupType
 
 import scala.annotation.varargs
 import scala.collection.mutable
+import scala.collection.JavaConverters._
 import scala.concurrent.duration._
 import scala.language.postfixOps
-import scala.util.{Success, Failure, Try}
+import scala.util.control.NonFatal
+import scala.util.{Failure, Success, Try}
 
 class UnicomplexExtension(system: ExtendedActorSystem) extends AkkaExtension {
 
+  val log = Logging.getLogger(system, this)
   val uniActor = system.actorOf(Props[Unicomplex], "unicomplex")
 
   private var _scannedComponents: Seq[String] = null
@@ -61,6 +67,37 @@ class UnicomplexExtension(system: ExtendedActorSystem) extends AkkaExtension {
   lazy val externalConfigDir = config.getString("external-config-dir")
 
   val boot = Agent[UnicomplexBoot](null)(system.dispatcher)
+
+  private[unicomplex] val materializers = new ConcurrentHashMap[String, Materializer]
+
+  def materializer(name: String) = Option(materializers.get(name)).getOrElse {
+
+    val materializerConfig = system.settings.config.getConfig(name)
+    require(materializerConfig.getString("type") == "squbs.materializer", s"No materializer with name $name specified in configuration")
+
+    val materializerFactoryClass = materializerConfig.getString("class")
+
+    try {
+      val clazz = Class.forName(materializerFactoryClass)
+      val materializer = clazz
+        .getMethod("createMaterializer", classOf[ActorSystem])
+        .invoke(clazz.newInstance(), system)
+        .asInstanceOf[Materializer]
+      materializer match {
+        case actorMaterializer: ActorMaterializer =>
+          import org.squbs.unicomplex.JMX._
+          val actorMaterializerBean = new ActorMaterializerBean(name, clazz.getName, actorMaterializer)
+          register(actorMaterializerBean, prefix(system) + materializerName + ObjectName.quote(name))
+        case _ =>
+      }
+      materializers.putIfAbsent(name, materializer)
+      materializers.get(name)
+    } catch {
+      case NonFatal(e) =>
+        log.error(e, s"Failure creating a materializer from $materializerFactoryClass.")
+        throw e
+    }
+  }
 }
 
 object Unicomplex extends ExtensionId[UnicomplexExtension] with ExtensionIdProvider {
@@ -68,6 +105,13 @@ object Unicomplex extends ExtensionId[UnicomplexExtension] with ExtensionIdProvi
   override def lookup() = Unicomplex
 
   override def createExtension(system: ExtendedActorSystem) = new UnicomplexExtension(system)
+
+  /**
+    * Java API to retrieve the [[UnicomplexExtension]].
+    * @param system The actor system.
+    * @return The [[UnicomplexExtension]]
+    */
+  override def get(system: ActorSystem): UnicomplexExtension = super.get(system)
 
   type InitReport = Try[Option[String]]
 
@@ -93,8 +137,8 @@ private[unicomplex] case class  StartListener(name: String, config: Config)
 private[unicomplex] case object RoutesStarted
 private[unicomplex] case class  StartCubeActor(props: Props, name: String = "", initRequired: Boolean = false)
 private[unicomplex] case class  StartCubeService(webContext: String, listeners: Seq[String], props: Props,
-                                                 name: String = "", proxyName : Option[String] = None,
-                                                 ps: PipelineSetting, initRequired: Boolean = false)
+                                                 name: String = "", ps: PipelineSetting, initRequired: Boolean = false)
+private[unicomplex] case class  StartFailure(t: Throwable)
 
 private[unicomplex] case object CheckInitStatus
 private[unicomplex] case object Started
@@ -122,6 +166,33 @@ case object Stopping extends LifecycleState
 case object Stopped extends LifecycleState
 
 case class Initialized(report: InitReport)
+
+object Initialized {
+
+  /**
+   * Java API for creating a successful InitReport without a description.
+   *
+   * @return The Initialized object with an empty Success InitReport.
+   */
+  def success(): Initialized = new Initialized(Success(None))
+
+  /**
+   * Java API for creating a successful InitReport with a description.
+   *
+   * @param desc The description to be reported.
+   * @return The Initialized object with the correct InitReport.
+   */
+  def success(desc: String): Initialized = new Initialized(Success(Option(desc)))
+
+  /**
+   * Java API for creating a failed InitReport.
+   *
+   * @param e The exception causing the failure.
+   * @return The Initialized object indicating the failure.
+   */
+  def failed(e: Throwable): Initialized = new Initialized(Failure(e))
+}
+
 case object Ack
 case object ReportStatus
 case class StatusReport(state: LifecycleState, cubes: Map[ActorRef, (CubeRegistration, Option[InitReports])],
@@ -148,11 +219,7 @@ private[unicomplex] case object HttpBindFailed
 
 case object PortBindings
 
-sealed trait ActorWrapper {
-  val actor: ActorRef
-}
-case class SimpleActor(actor: ActorRef) extends ActorWrapper
-case class ProxiedActor(actor: ActorRef) extends ActorWrapper
+case class FlowWrapper(flow: Materializer => Flow[RequestContext, RequestContext, NotUsed], actor: ActorRef)
 
 /**
  * The Unicomplex actor is the supervisor of the Unicomplex.
@@ -166,7 +233,7 @@ class Unicomplex extends Actor with Stash with ActorLogging {
 
   override val supervisorStrategy =
     OneForOneStrategy(maxNrOfRetries = 10, withinTimeRange = 1 minute) {
-      case e: Exception =>
+      case NonFatal(e) =>
         log.warning(s"Received ${e.getClass.getName} with message ${e.getMessage} from ${sender().path}")
         Restart
     }
@@ -192,11 +259,7 @@ class Unicomplex extends Actor with Stash with ActorLogging {
 
   private var servicesStarted= false
 
-  import ConfigUtil._
-  val isStreaming = context.system.settings.config.get[Boolean]("squbs.experimental-mode-on", false)
-
-  lazy val serviceRegistry = if(isStreaming) new streaming.ServiceRegistry(log)
-                             else new ServiceRegistry(log)
+  lazy val serviceRegistry = new ServiceRegistry(log)
 
   private val unicomplexExtension = Unicomplex(context.system)
   import unicomplexExtension._
@@ -220,30 +283,25 @@ class Unicomplex extends Actor with Stash with ActorLogging {
     override def getActivationMillis: Int = activationDuration
   }
 
-
-
   // $COVERAGE-ON$
 
   class CubesBean extends CubesMXBean {
 
     override def getCubes: util.List[CubeInfo] = {
-      import scala.collection.JavaConversions._
-
-      cubes.values.toSeq map { c =>
+      cubes.values.toSeq.map { c =>
         CubeInfo(c._1.info.name, c._1.info.fullName, c._1.info.version, c._1.cubeSupervisor.toString())
-      }
+      }.asJava
     }
   }
 
   class ExtensionsBean extends ExtensionsMXBean {
     override def getExtensions: util.List[ExtensionInfo] = {
-      import scala.collection.JavaConversions._
-      extensions map { e =>
+      extensions.map { e =>
         val (phase, ex) = e.exceptions.headOption map {
           case (iphase, exception) => (iphase, exception.toString)
         } getOrElse (("", ""))
         ExtensionInfo(e.info.name, e.sequence, phase, ex)
-      }
+      }.asJava
     }
   }
 
@@ -251,7 +309,7 @@ class Unicomplex extends Actor with Stash with ActorLogging {
   private val stateMXBean = new SystemStateBean
 
 
-  override def preStart() {
+  override def preStart(): Unit = {
     Unicomplex.actors.put(context.system.name, self)
 
     import org.squbs.unicomplex.JMX._
@@ -261,7 +319,7 @@ class Unicomplex extends Actor with Stash with ActorLogging {
     register(new ExtensionsBean, prefix + extensionsName)
   }
 
-  override def postStop() {
+  override def postStop(): Unit = {
     import org.squbs.unicomplex.JMX._ // JMX registrations
     unregister(prefix + extensionsName)
     unregister(prefix + cubesName)
@@ -283,12 +341,12 @@ class Unicomplex extends Actor with Stash with ActorLogging {
       if (cubes.isEmpty && serviceRegistry.isShutdownComplete) {
         log.info("All CubeSupervisors and services were terminated. Shutting down the system")
         updateSystemState(Stopped)
-        context.system.shutdown()
+        context.system.terminate()
       }
 
     case ShutdownTimedOut => log.warning("Graceful shutdown timed out.")
       updateSystemState(Stopped)
-      context.system.shutdown()
+      context.system.terminate()
   }
 
   def shutdownBehavior: Receive = {
@@ -393,8 +451,8 @@ class Unicomplex extends Actor with Stash with ActorLogging {
         serviceRegistry.prepListeners(listeners.keys)
       }
 
-    case RegisterContext(listeners, webContext, actor, ps) =>
-      sender() ! Try { serviceRegistry.registerContext(listeners, webContext, actor, ps) }
+    case RegisterContext(listeners, webContext, serviceHandler, ps) =>
+      sender() ! Try { serviceRegistry.registerContext(listeners, webContext, serviceHandler, ps) }
 
     case StartListener(name, conf) => // Sent from Bootstrap to start the web service infrastructure.
 
@@ -414,7 +472,10 @@ class Unicomplex extends Actor with Stash with ActorLogging {
           },
             discardOld = false)
 
-        case Failure(t) => updateSystemState(checkInitState())
+        case Failure(t) => {
+          sender() ! StartFailure(t)
+          updateSystemState(checkInitState())
+        }
       }
 
     case Started => // Bootstrap startup and extension init done
@@ -476,7 +537,7 @@ class Unicomplex extends Actor with Stash with ActorLogging {
       sender() ! serviceRegistry.portBindings
   }
 
-  def updateCubes(reports: InitReports) {
+  def updateCubes(reports: InitReports): Unit = {
     val reg = cubes get sender()
     reg match {
       case Some((registration, _)) =>
@@ -523,7 +584,7 @@ class Unicomplex extends Actor with Stash with ActorLogging {
 
   def pendingServiceStarts = servicesStarted && !serviceRegistry.isListenersBound
 
-  def updateSystemState(state: LifecycleState) {
+  def updateSystemState(state: LifecycleState): Unit = {
     if (state != systemState) {
       systemState = state
 
@@ -569,11 +630,10 @@ class Unicomplex extends Actor with Stash with ActorLogging {
 class CubeSupervisor extends Actor with ActorLogging with GracefulStopHelper {
   import context.dispatcher
 
-  import scala.collection.JavaConversions._
-
   val cubeName = self.path.name
-  val pipelineManager = PipelineManager(context.system)
   val actorErrorStatesAgent = Agent[Map[String, ActorErrorState]](Map())
+
+  implicit val timeout = UnicomplexBoot.defaultStartupTimeout
 
   class CubeStateBean extends CubeStateMXBean {
 
@@ -583,24 +643,24 @@ class CubeSupervisor extends Actor with ActorLogging with GracefulStopHelper {
 
     override def getWellKnownActors: String = context.children.mkString(",")
 
-    override def getActorErrorStates: util.List[ActorErrorState] = actorErrorStatesAgent().values.toList
+    override def getActorErrorStates: util.List[ActorErrorState] = actorErrorStatesAgent().values.toList.asJava
   }
 
-  override def preStart() {
+  override def preStart(): Unit = {
     import org.squbs.unicomplex.JMX._
     val cubeStateMXBean = new CubeStateBean
     register(cubeStateMXBean, prefix + cubeStateName + cubeName)
 
   }
 
-  override def postStop() {
+  override def postStop(): Unit = {
     import org.squbs.unicomplex.JMX._
     unregister(prefix + cubeStateName + cubeName)
   }
 
   override val supervisorStrategy =
     OneForOneStrategy(maxNrOfRetries = 10, withinTimeRange = 1 minute) {
-      case e: Exception =>
+      case NonFatal(e) =>
         val actorPath = sender().path.toStringWithoutAddress
         log.warning(s"Received ${e.getClass.getName} with message ${e.getMessage} from $actorPath")
         actorErrorStatesAgent.send{states =>
@@ -638,37 +698,39 @@ class CubeSupervisor extends Actor with ActorLogging with GracefulStopHelper {
       if (initRequired) initMap += cubeActor -> None
       log.info(s"Started actor ${cubeActor.path}")
 
-    case StartCubeService(webContext, listeners, props, name, proxyName, ps, initRequired) =>
-
-      // Caution: The serviceActor may be the cubeActor in case of no proxy, or the proxy in case there is a proxy.
-      val (cubeActor, serviceActor) = try {
-        proxyName.fold(pipelineManager.default) {
-          case "" => None
-          case other => pipelineManager.getProcessor(other)
-        } match {
-          case None =>
-            val hostActor = context.actorOf(props, name) // disable proxy
-            (hostActor, SimpleActor(hostActor))
-          case Some(proc) =>
-            val hostActor = context.actorOf(props, name + "target")
-            (hostActor, ProxiedActor(context.actorOf(Props(classOf[CubeProxyActor], proc, hostActor), name)))
-        }
-      } catch {
-        case t: Throwable =>
-          log.error(t, "Cube {} proxy with name of {} initialized failed.", name, proxyName)
-          val hostActor = context.actorOf(props, name) // disable proxy
-          initMap += hostActor -> Some(Failure(t))
-          (hostActor, SimpleActor(hostActor))
+    case StartCubeService(webContext, listeners, props, name, ps, initRequired)
+        if classOf[FlowSupplier].isAssignableFrom(props.actorClass) =>
+      val hostActor = context.actorOf(props, name)
+      initMap += hostActor -> None
+      pendingContexts += 1
+      (hostActor ? FlowRequest).mapTo[Try[Materializer => Flow[RequestContext, RequestContext, NotUsed]]] foreach {
+        case Success(flow) =>
+          val reg = RegisterContext(listeners, webContext, FlowWrapper(flow, hostActor), ps)
+          (Unicomplex() ? reg).mapTo[Try[_]].map {
+            case Success(_) => ContextRegistrationResult(hostActor, Success(reg))
+            case Failure(t) => ContextRegistrationResult(hostActor, Failure(t))
+          }   .pipeTo(self)
+        case Failure(e) =>
+          self ! ContextRegistrationResult(hostActor, Failure(e))
       }
 
-      if (initRequired && !(initMap contains cubeActor)) initMap += cubeActor -> None
+    case StartCubeService(webContext, listeners, props, name, ps, initRequired) =>
+      val hostActor = context.actorOf(props, name)
+      import org.squbs.util.ConfigUtil._
+      val concurrency = context.system.settings.config.get[Int]("akka.http.server.pipelining-limit")
+      val flow = (materializer: Materializer) => Flow[RequestContext].mapAsync(concurrency) { requestContext =>
+        (hostActor ? requestContext.request)
+          .collect { case response: HttpResponse => requestContext.copy(response = Some(Success(response))) }
+          .recover { case e => requestContext.copy(response = Some(Failure(e))) }
+      }
+      val wrapper = FlowWrapper(flow, hostActor)
 
-      implicit val timeout = Timeout(1 seconds) // TODO Check with Akara
-      val reg = RegisterContext(listeners, webContext, serviceActor, ps)
+      if (initRequired && !(initMap contains hostActor)) initMap += hostActor -> None
+      val reg = RegisterContext(listeners, webContext, wrapper, ps)
       pendingContexts += 1
       (Unicomplex() ? reg).mapTo[Try[_]].map {
-        case Success(_) => ContextRegistrationResult(cubeActor, Success(reg))
-        case Failure(t) => ContextRegistrationResult(cubeActor, Failure(t))
+        case Success(_) => ContextRegistrationResult(hostActor, Success(reg))
+        case Failure(t) => ContextRegistrationResult(hostActor, Failure(t))
       }   .pipeTo(self)
 
     case ContextRegistrationResult(cubeActor, tr) =>
@@ -686,6 +748,13 @@ class CubeSupervisor extends Actor with ActorLogging with GracefulStopHelper {
         pendingNotifiees = Seq.empty
         context.unbecome()
       }
+
+    case StartFailure(t) =>
+      // Register the failure with a bogus noop actor so we have all failures.
+      // The real servicing actor was never created.
+      initMap += context.actorOf(Props[NoopActor]) -> Some(Failure(t))
+      cubeState = Failed
+      Unicomplex() ! InitReports(cubeState, initMap.toMap)
 
     case Started => // Signals end of StartCubeActor messages. No more allowed after this.
       if (initMap.isEmpty) {
@@ -747,3 +816,27 @@ class CubeSupervisor extends Actor with ActorLogging with GracefulStopHelper {
   }
 }
 
+/**
+  * A noop actor used when a stub ActorRef is needed to register failures.
+  */
+private[unicomplex] class NoopActor extends Actor {
+  def receive = PartialFunction.empty
+}
+
+class DefaultMaterializer {
+
+  def createMaterializer(implicit system: ActorSystem): ActorMaterializer = {
+    // Needs ActorSystem, that's why defining inside the function.  Given that it should be not be called more than
+    // a few times, it should be ok.
+    val log = Logging.getLogger(system, this)
+
+    val decider: Supervision.Decider = {
+      case ex =>
+        log.error(ex, "An error occurred in the stream.  Calling Supervision.Stop inside the decider!")
+        Supervision.Stop
+    }
+
+    val settings = ActorMaterializerSettings(system).withSupervisionStrategy(decider)
+    ActorMaterializer(settings)
+  }
+}

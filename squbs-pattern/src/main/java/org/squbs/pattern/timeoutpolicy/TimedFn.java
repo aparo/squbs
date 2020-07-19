@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -16,9 +16,9 @@
 
 package org.squbs.pattern.timeoutpolicy;
 
-import scala.concurrent.duration.FiniteDuration;
+import java.time.Duration;
 
 @FunctionalInterface
 public interface TimedFn<T> {
-    T get(FiniteDuration t) throws Exception;
+    T get(Duration t) throws Exception;
 }

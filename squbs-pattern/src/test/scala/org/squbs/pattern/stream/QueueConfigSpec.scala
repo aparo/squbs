@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -33,7 +33,6 @@ class QueueConfigSpec extends FlatSpec with Matchers {
         | block-size = 80m
         | index-spacing = 8k
         | output-ports = 3
-        | auto-commit = false
         | commit-order-policy = strict
       """.stripMargin
     val config = ConfigFactory.parseString(configText)
@@ -47,7 +46,6 @@ class QueueConfigSpec extends FlatSpec with Matchers {
     queueConfig.isBuffered shouldBe false
     queueConfig.epoch shouldBe 0L
     queueConfig.outputPorts shouldBe 3
-    queueConfig.autoCommit shouldBe false
     queueConfig.commitOrderPolicy shouldBe Strict
   }
 
@@ -68,7 +66,6 @@ class QueueConfigSpec extends FlatSpec with Matchers {
     queueConfig.isBuffered shouldBe false
     queueConfig.epoch shouldBe 0L
     queueConfig.outputPorts shouldBe 1
-    queueConfig.autoCommit shouldBe true
     queueConfig.commitOrderPolicy shouldBe Lenient
   }
 
@@ -81,7 +78,6 @@ class QueueConfigSpec extends FlatSpec with Matchers {
         | block-size = 80m
         | index-spacing = 8k
         | output-ports = 3
-        | auto-commit = false
         | commit-order-policy = lenient
       """.stripMargin
     val config = ConfigFactory.parseString(configText)
@@ -98,7 +94,6 @@ class QueueConfigSpec extends FlatSpec with Matchers {
         | block-size = 80m
         | index-spacing = 8k
         | output-ports = 3
-        | auto-commit = false
         | commit-order-policy = invalid
       """.stripMargin
     val config = ConfigFactory.parseString(configText)

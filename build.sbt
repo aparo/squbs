@@ -1,12 +1,20 @@
+import Shared._
 
+crossScalaVersions in ThisBuild := Seq("2.12.10", "2.11.12")
 
-scalaVersion in ThisBuild := "2.11.8"
+scalaVersion in ThisBuild := crossScalaVersions.value.head
 
 organization in ThisBuild := "org.squbs"
 
 publishArtifact := false
 
-coverageEnabled in ThisBuild := true
+// TODO: Remove the overwrite flag once https://github.com/sbt/sbt/issues/3725 is fixed.
+import com.typesafe.sbt.pgp.PgpKeys.publishSignedConfiguration
+publishSignedConfiguration := publishSignedConfiguration.value.withOverwrite(isSnapshot.value)
+
+coverageEnabled in(Test, compile) := true
+
+coverageEnabled in(Compile, compile) := false
 
 coverageMinimum in ThisBuild := 70.0
 
@@ -18,26 +26,18 @@ parallelExecution in ThisBuild := false
 
 updateOptions in ThisBuild := updateOptions.value.withCachedResolution(true)
 
-val par = {
-  val travis = sys.env.getOrElse("TRAVIS", default = "false") == "true"
-  val pr = sys.env.getOrElse("TRAVIS_PULL_REQUEST", default = "") != "false"
-  if (travis && pr) 1
-  else sys.runtime.availableProcessors
-}
-
 concurrentRestrictions in Global := Seq(Tags.limitAll(par))
 
 lazy val `squbs-pipeline` = project
 
-lazy val `squbs-streamingpipeline` = project
+lazy val `squbs-unicomplex` = project dependsOn (`squbs-pipeline`, `squbs-ext`)
 
-lazy val `squbs-unicomplex` = project dependsOn (`squbs-pipeline`, `squbs-streamingpipeline`)
+lazy val `squbs-testkit` = (project dependsOn `squbs-unicomplex`).enablePlugins(de.johoop.testngplugin.TestNGPlugin)
 
-lazy val `squbs-testkit` = project dependsOn `squbs-unicomplex`
+lazy val `squbs-zkcluster` = project dependsOn `squbs-testkit` % Test
 
-lazy val `squbs-zkcluster` = project dependsOn `squbs-testkit` % "test"
-
-lazy val `squbs-httpclient` = project dependsOn(`squbs-unicomplex`, `squbs-testkit` % "test")
+lazy val `squbs-httpclient` = project dependsOn(`squbs-ext` % "compile->compile;test->test",
+  `squbs-pipeline`, `squbs-testkit` % Test)
 
 // Add SlowTest configuration to squbs-pattern to run the long-running tests.
 // To run standard tests> test
@@ -46,10 +46,11 @@ lazy val SlowTest = config("slow") extend Test
 
 // Setup squbs-pattern with slow tests enabled.
 // Perhaps we can do it better in future by hiding the details in the plugin.
-lazy val `squbs-pattern` = (project dependsOn `squbs-testkit` % "test")
+lazy val `squbs-pattern` = (project dependsOn (`squbs-ext`, `squbs-testkit` % "test"))
   .configs(SlowTest)
   .settings(inConfig(SlowTest)(Defaults.testTasks): _*)
   .settings(testOptions in SlowTest := Seq.empty)
+  .enablePlugins(spray.boilerplate.BoilerplatePlugin)
 
 // Information for debugging tests and test launchers inside sbt.
 // val DebugTest = config("dtest") extend Test
@@ -63,13 +64,13 @@ lazy val `squbs-pattern` = (project dependsOn `squbs-testkit` % "test")
 //    definedTests in DebugTest := (definedTests in Test).value
 //  )
 
-lazy val `squbs-actorregistry` = project dependsOn (`squbs-unicomplex`, `squbs-testkit` % "test")
+lazy val `squbs-actorregistry` = project dependsOn (`squbs-unicomplex`, `squbs-testkit` % Test)
 
-lazy val `squbs-actormonitor` = project dependsOn (`squbs-unicomplex`, `squbs-testkit` % "test")
+lazy val `squbs-actormonitor` = project dependsOn (`squbs-unicomplex`, `squbs-testkit` % Test)
 
-lazy val `squbs-admin` = project dependsOn (`squbs-unicomplex`, `squbs-testkit` % "test")
+lazy val `squbs-admin` = project dependsOn (`squbs-unicomplex`, `squbs-testkit` % Test)
 
-lazy val `squbs-admin-exp` = project dependsOn (`squbs-unicomplex`, `squbs-testkit` % "test")
+lazy val `squbs-ext` = project dependsOn `squbs-pipeline` % "provided"
 
 publishTo in ThisBuild := {
   val nexus = "https://oss.sonatype.org/"
@@ -113,5 +114,10 @@ pomExtra in ThisBuild :=
         <id>anilgursel</id>
         <name>Anil Gursel</name>
         <url>https://github.com/anilgursel</url>
+      </developer>
+      <developer>
+        <id>sebady</id>
+        <name>Sherif Ebady</name>
+        <url>https://github.com/sebady</url>
       </developer>
     </developers>

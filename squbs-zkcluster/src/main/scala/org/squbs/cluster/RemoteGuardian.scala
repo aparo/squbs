@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ class RemoteGuardian extends Actor with ActorLogging {
   override def receive: Receive = {
     case QuarantinedEvent(remote, uid) => // first QuarantinedEvent arrived
       log.error("[RemoteGuardian] get Quarantined event for remote {} uid {}. Performing a suicide ...", remote, uid)
-      zkCluster.addShutdownListener((_) => context.system.shutdown)
+      zkCluster.addShutdownListener((_) => context.system.terminate())
       zkCluster.addShutdownListener((_) => System.exit(EXIT_CODE))
       zkCluster.zkClusterActor ! PoisonPill
   }

@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import org.squbs.actormonitor.ActorMonitorBean._
 import org.squbs.lifecycle.GracefulStopHelper
 import org.squbs.unicomplex.JMX._
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 
 private[actormonitor] case class ActorMonitorConfig(maxActorCount: Int, maxChildrenDisplay: Int)
 
@@ -34,14 +34,14 @@ private[actormonitor] class ActorMonitor(_monitorConfig: ActorMonitorConfig) ext
   register(new ActorMonitorConfigBean(monitorConfig, self, context), prefix + configBean )
   context.actorSelection("/*") ! Identify(monitorConfig)
 
-  override def postStop() {
+  override def postStop(): Unit = {
     unregister(prefix + configBean)
-    totalBeans foreach unregister
+    totalBeans.asScala.foreach(unregister)
   }
 
   def receive = {
     case "refresh" =>
-      totalBeans foreach unregister
+      totalBeans.asScala.foreach(unregister)
       context.actorSelection("/*") ! Identify(monitorConfig)
     case ActorIdentity(monitorConfig: ActorMonitorConfig , Some(actor))=>
       implicit val config = monitorConfig

@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import org.squbs.lifecycle.ExtensionLifecycle
 
 private class ActorMonitorInit extends ExtensionLifecycle with LazyLogging {
 
-  override def postInit() {
+  override def postInit(): Unit = {
     logger.info(s"postInit ${this.getClass}")
 
     import boot._

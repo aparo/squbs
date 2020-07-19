@@ -1,211 +1,263 @@
-#Request/Response Pipeline Proxy
+# Request/Response Pipeline
 
 ### Overview
-We often need to have common infrastructure functionality across different squbs
-services, or as organizational standards. Such infrastructure includes, but is not
-limited to logging, request tracing, authentication/authorization, tracking,
-cookie management, A/B testing, etc.
 
-As squbs promotes separation of concerns, such logic would belong to infrastructure
-and not service implementation. The squbs proxy allows infrastructure to provide
-components installed into a service without service owner having to worry about such
-aspects in their service or actors.
+We often need to have common infrastructure functionality or organizational standards across different services/clients.  Such infrastructure includes, but is not limited, to logging, metrics collection, request tracing, authentication/authorization, tracking, cookie management, A/B testing, etc.
 
-Generally speaking, a squbs proxy is an actor acting as a bridge in between the
-service (Spray) responder and the squbs service. That is to say:
+As squbs promotes separation of concerns, such logic would belong to infrastructure and not service/client implementation.  The squbs pipeline allows infrastructure to provide components installed into a service/client without service/client owner having to worry about such aspects.
 
-* All request messages sent from resonder to squbs service will go thru the proxy actor
-* Vice versa, all response messages sent from squbs service to responder will go thru the proxy actor.
+Generally speaking, a squbs pipeline is a Bidi Flow acting as a bridge in between: 
 
+  * the Akka HTTP layer and the squbs service:
+    * All request messages sent from Akka Http to squbs service will go thru the pipeline
+    * Vice versa, all response messages sent from squbs service will go thru the pipeline.
+  * squbs client and Akka HTTP host connection pool flow:
+    * 	All request messages sent from squbs client to Akka HTTP host connection pool will go thru the pipeline
+    * Vice versa, all response messages sent from Akka HTTP host connection pool to squbs client will go thru the pipeline. 
 
-### Proxy Binding
+### Pipeline declaration
 
-In your `squbs-meta.conf`, you can specify proxy for your service as follows:
+Default pre/post flows specified via the below configuration are automatically connected to the server/client side pipeline unless `defaultPipeline` in individual service/client configuration is set to `off`:
+
+```
+squbs.pipeline.server.default {
+	pre-flow = defaultServerPreFlow
+	post-flow = defaultServerPostFlow
+}
+
+squbs.pipeline.client.default {
+	pre-flow = defaultClientPreFlow
+	post-flow = defaultClientPostFlow
+}
+```
+
+#### Pipeline declaration for services
+
+In `squbs-meta.conf`, you can specify a pipeline for a service:
 
 ```
 squbs-services = [
   {
-    class-name = com.myorg.myapp.MyActor
+    class-name = org.squbs.sample.MyActor
     web-context = mypath
-    proxy-name = myProxy
+    pipeline = dummyflow
   }
 ]
 ```
 
-Please check out [Unicomplex & Cube Bootstrapping](bootstrap.md) for more
-information about `squbs-meta.conf`.
-
-**Proxy resolution rules**:
-
-* If you don't specify any proxy-name, i.e.: omit the proxy-name, squbs will install
-a proxy named "default-proxy" provided with your system configuration in some `reference.conf` or `application.conf`.
-* If you set an empty string `""` for proxy-name, no proxy is applied to the
-requests/responses for your service.
-* For any other name, squbs will try to load proxy the proxy definition and configuration from the system configuration provided through the merged `reference.conf` and `application.conf` files.
+If there is no custom pipeline for a squbs-service, just omit.
 
 
-### Proxy Definition & Configuration
-
-Following is the proxy definition required in the conf files:
-
+With the above configuration, the pipeline would look like:
 
 ```
-myProxy {
-  type = squbs.proxy
-  processorFactory = org.myorg.myapp.SomeProcessorFactory
-  settings = {
-    // Proxy-specific configuration/settings here.  
-  }
+                 +---------+   +---------+   +---------+   +---------+
+RequestContext ~>|         |~> |         |~> |         |~> |         | 
+                 | default |   |  dummy  |   | default |   |  squbs  |
+                 | PreFlow |   |  flow   |   | PostFlow|   | service | 
+RequestContext <~|         |<~ |         |<~ |         |<~ |         |
+                 +---------+   +---------+   +---------+   +---------+
+```
+
+`RequestContext` is basically a wrapper around `HttpRequest` and `HttpResponse`, which also allows carrying context information.
+
+#### Pipeline declaration for clients
+
+In `application.conf`, you can specify a pipeline for a client:
+
+```
+sample {
+  type = squbs.httpclient
+  pipeline = dummyFlow
 }
-
 ```
 
-Explaining the fields:
+If there is no custom pipeline for a squbs-client, just omit.
 
-* `myProxy` is the name of the proxy which aligns with the binding in `squbs-meta.conf`.
-* `type` must be `squbs.proxy` to be recognized as a proxy declaration.
-* `processorFactory` is factory impl which can be used to create a proxy processor (`Processor` is discussed in a later section of this document).
-
-   ```scala
-   trait ProcessorFactory {
-     def create(settings: Option[Config])(implicit actorRefFactory: ActorRefFactory): Option[Processor]
-   }
-   ```
-* `settings` is an optional config object which can be used by processorFactory (as you can tell from the above create method).
+With the above configuration, the pipeline would look like:
 
 
-### Proxy Processor
-
-Proxy Processor is used to describe the behavior of the proxy, like how to handle HttpRequest, HttpResponse, chunked request/chunked response, etc.  It provides method hooks that allow implementers to define their own logic.
-
-You can check the [Processor definition](../squbs-pipeline/src/main/scala/org/squbs/pipeline/Processor.scala).
-
-This Processor will be used along with the proxy actor (in this case it is `PipelineProcessorActor`) to perform the proxy behavior:
-
-![Processor](./img/Processor.jpg)
-
-Implementation of this processor is optional. In most cases you don't have to create an implementation of your own. squbs already provides a very lightweight pipeline based processor for you. This is described in the sections below.
+```
+                 +---------+   +---------+   +---------+   +----------+
+RequestContext ~>|         |~> |         |~> |         |~> |   Host   | 
+                 | default |   |  dummy  |   | default |   |Connection|
+                 | PreFlow |   |  flow   |   | PostFlow|   |   Pool   | 
+RequestContext <~|         |<~ |         |<~ |         |<~ |   Flow   |
+                 +---------+   +---------+   +---------+   +----------+
+```
 
 
-### RequestContext
+### Bidi Flow Configuration
 
-As you might see from Processor definition, a class called `RequestContext` is widely used.
-This class is an **immutable** data container which hosts all useful information across the request/response lifecycle.
+A bidi flow can be specified as below:
 
-Below is a basic structure of the `RequestContext` and corresponding response wrapper class information:
+```
+dummyflow {
+  type = squbs.pipelineflow
+  factory = org.squbs.sample.DummyBidiFlow
+}
+```
 
-![RequestContext](./img/RequestContext.jpg)
+* type: to idenfity the configuration as a `squbs.pipelineflow`.
+* factory: the factory class to create the `BidiFlow` from.
 
+A sample `DummyBidiFlow` looks like below:
 
-#Pipeline Proxy
-
-Touched upon above, squbs has a default simple pipeline processor implementation.
-
-With this implementation, you can simply setup a proxy by:
-
-#### 1. Implementing handlers
-
-Handler definition:
+##### Scala
 
 ```scala
-trait Handler {
-  def process(reqCtx: RequestContext)(implicit context: ActorRefFactory): Future[RequestContext]
+class DummyBidiFlow extends PipelineFlowFactory {
+
+  override def create(context: Context)(implicit system: ActorSystem): PipelineFlow = {
+     BidiFlow.fromGraph(GraphDSL.create() { implicit b =>
+      val inbound = b.add(Flow[RequestContext].map { rc => rc.withRequestHeader(RawHeader("DummyRequest", "ReqValue")) })
+      val outbound = b.add(Flow[RequestContext].map{ rc => rc.withResponseHeader(RawHeader("DummyResponse", "ResValue"))})
+      BidiShape.fromFlows(inbound, outbound)
+    })
+  }
 }
 ```
 
-HandlerFactory definition:
+##### Java
+
+```java
+public class DummyBidiFlow extends AbstractPipelineFlowFactory {
+
+    @Override
+    public BidiFlow<RequestContext, RequestContext, RequestContext, RequestContext, NotUsed> create(Context context, ActorSystem system) {
+        return BidiFlow.fromGraph(GraphDSL.create(b -> {
+            final FlowShape<RequestContext, RequestContext> inbound = b.add(
+                    Flow.of(RequestContext.class)
+                            .map(rc -> rc.withRequestHeader(RawHeader.create("DummyRequest", "ReqValue"))));
+            final FlowShape<RequestContext, RequestContext> outbound = b.add(
+                    Flow.of(RequestContext.class)
+                            .map(rc -> rc.withResponseHeader(RawHeader.create("DummyResponse", "ResValue"))));
+
+            return BidiShape.fromFlows(inbound, outbound);
+        }));
+    }
+}
+```
+
+#### Aborting the flow
+In certain scenarios, a stage in pipeline may have a need to abort the flow and return an `HttpResponse`, e.g., in case of authentication/authorization.  In such scenarios, the rest of the pipeline should be skipped and the request should not reach to the squbs service.  To skip the rest of the flow: 
+
+* the flow needs to be added to builder with `abortable`, e.g., `b.add(authorization abortable)`.
+* call `abortWith` on `RequestContext` with an `HttpResponse` when you need to abort.
+
+In the below `DummyAbortableBidiFlow ` example, `authorization ` is a bidi flow with `abortable` and it aborts the flow is user is not authorized: 
+
+##### Scala
 
 ```scala
-trait HandlerFactory {
-  def create(config: Option[Config])(implicit actorRefFactory: ActorRefFactory): Option[Handler]
-}
-```
+class DummyAbortableBidiFlow extends PipelineFlowFactory {
 
-You need to implement a HandlerFactory to create your handler instances.
+  override def create(context: Context)(implicit system: ActorSystem): PipelineFlow = {
 
-#### 2. Configuring the pipeline
+    BidiFlow.fromGraph(GraphDSL.create() { implicit b =>
+      import GraphDSL.Implicits._
+      val inboundA = b.add(Flow[RequestContext].map { rc => rc.withRequestHeader(RawHeader("keyInA", "valInA")) })
+      val inboundC = b.add(Flow[RequestContext].map { rc => rc.withRequestHeader(RawHeader("keyInC", "valInC")) })
+      val outboundA = b.add(Flow[RequestContext].map { rc => rc.withResponseHeader(RawHeader("keyOutA", "valOutA"))})
+      val outboundC = b.add(Flow[RequestContext].map { rc => rc.withResponseHeader(RawHeader("keyOutC", "valOutC"))})
 
-Once you implemented the handler factory, it needs to be added to the configuration.
+      val inboundOutboundB = b.add(authorization abortable)
 
-```
-myProxy {
+      inboundA ~>  inboundOutboundB.in1
+                   inboundOutboundB.out1 ~> inboundC
+                   inboundOutboundB.in2  <~ outboundC
+      outboundA <~ inboundOutboundB.out2
 
-  type = squbs.proxy
-
-  processorFactory = org.squbs.pipeline.SimpleProcessorFactory
-
-  settings = {
-    inbound = [handler1, handler2]
-    outbound = [handler3, handler4]
+      BidiShape(inboundA.in, inboundC.out, outboundC.in, outboundA.out)
+    })
   }
 
-}
+  val authorization = BidiFlow.fromGraph(GraphDSL.create() { implicit b =>
 
-handler1 {
-	type = pipeline.handler
-	factory = com.myorg.myhandler1
-}
+    val authorization = b.add(Flow[RequestContext] map { rc =>
+        if(!isAuthorized) rc.abortWith(HttpResponse(StatusCodes.Unauthorized, entity = "Not Authorized!"))
+        else rc
+    })
 
-handler2 {
-	type = pipeline.handler
-	factory = com.myorg.myhandler2
-}
+    val noneFlow = b.add(Flow[RequestContext]) // Do nothing
 
-handler3 {
-	type = pipeline.handler
-	factory = com.myorg.myhandler3
-}
-
-handler4 {
-	type = pipeline.handler
-	factory = com.myorg.myhandler4
+    BidiShape.fromFlows(authorization, noneFlow)
+  })
 }
 ```
 
-Or you might check [sample config with description](../squbs-unicomplex/src/main/resources/reference.conf#L23)
+##### Java
 
-For the above configuration:
+```java
+public class DummyAbortableBidiFlow extends japi.PipelineFlowFactory {
 
-* `processorFactory` must be `org.squbs.proxy.SimpleProcessorFactory`.
-* `settings.inbound` is the sequence of request handlers.
-* `settings.outbound` is the sequence of response handlers.
-* `handlerX.type` must be `pipeline.handler`.
-* `handlerX.factory` is the name of a class that implements HandlerFactory
+    @Override
+    public BidiFlow<RequestContext, RequestContext, RequestContext, RequestContext, NotUsed>
+    create(Context context, ActorSystem system) {
 
-Again, if you want to have custom logic for other phases like preInbound or postOutbound, you can extend [SimpleProcessor](../squbs-unicomplex/src/main/scala/org/squbs/proxy/SimpleProcessor.scala#L30) and create your own factory just like [SimpleProcessorFactory](../squbs-unicomplex/src/main/scala/org/squbs/proxy/SimpleProcessor.scala#L46)
+        return BidiFlow.fromGraph(GraphDSL.create(b -> {
+            final FlowShape<RequestContext, RequestContext> inboundA = b.add(
+                Flow.of(RequestContext.class)
+                    .map(rc -> rc.withRequestHeader(RawHeader.create("keyInA", "valInA"))));
+            final FlowShape<RequestContext, RequestContext> inboundC = b.add(
+                Flow.of(RequestContext.class)
+                    .map(rc -> rc.withRequestHeader(RawHeader.create("keyInC", "valInC"))));
+            final FlowShape<RequestContext, RequestContext> outboundA = b.add(
+                Flow.of(RequestContext.class)
+                    .map(rc -> rc.withRequestHeader(RawHeader.create("keyOutA", "valOutA"))));
+            final FlowShape<RequestContext, RequestContext> outboundC = b.add(
+                Flow.of(RequestContext.class)
+                    .map(rc -> rc.withResponseHeader(RawHeader.create("keyOutC", "valOutC"))));
 
-####  Default proxy
+            final BidiShape<RequestContext, RequestContext> inboundOutboundB =
+                b.add(abortable(authorization));
 
-Squbs has a [default proxy](../squbs-unicomplex/src/main/resources/reference.conf#L23) defined in squbs-unicomplex
+            b.from(inboundA).toInlet(inboundOutboundB.in1());
+            b.to(inboundC).fromOutlet(inboundOutboundB.out1());
+            b.from(outboundC).toInlet(inboundOutboundB.in2());
+            b.to(outboundA).fromOutlet(inboundOutboundB.out2());
 
-So in your application, you can simply define your proxy config like this:
+            return new BidiShape<>(inboundA.in(), inboundC.out(), outboundC.in(), outboundA.out());
+        }));
+    }
+
+    final BidiFlow<RequestContext, RequestContext, RequestContext, RequestContext, NotUsed> authorization =
+        BidiFlow.fromGraph(GraphDSL.create(b -> {
+            final FlowShape<RequestContext, RequestContext> authorization = b.add(
+                Flow.of(RequestContext.class)
+                    .map(rc -> {
+                        if (!isAuthorized()) {
+                            rc.abortWith(HttpResponse.create()
+                                .withStatus(StatusCodes.Unauthorized()).withEntity("Not Authorized!"));
+                        } else return rc;
+                    }));
+
+            FlowShape<RequestContext, RequestContext, NotUsed> noneFlow = b.add(
+                    Flow.of(RequestContext.class));
+
+            return BidiShape.fromFlows(authorization, noneFlow);
+        }));
+}
+```
+
+Once a flow is added with `abortable`, a bidi flow gets connected.  This bidi flow checks the existence of `HttpResponse` and bypasses or sends the request downstream.  Here is how the above `DummyAbortableBidiFlow` looks:
+
 
 ```
-default-proxy {
-  settings = {
-    inbound = [handler1, handler2]
-    outbound = [handler3, handler4]
-  }
-}
-
-handler1 {
-	type = pipeline.handler
-	factory = com.myorg.myhandler1
-}
-
-handler2 {
-	type = pipeline.handler
-	factory = com.myorg.myhandler2
-}
-
-handler3 {
-	type = pipeline.handler
-	factory = com.myorg.myhandler3
-}
-
-handler4 {
-	type = pipeline.handler
-	factory = com.myorg.myhandler4
-}
+                                                +-----------------------------------+
+                                                |  +-----------+    +-----------+   |   +-----------+
+                  +-----------+   +---------+   |  |           | ~> |  filter   o~~~0 ~>|           |
+                  |           |   |         |   |  |           |    |not aborted|   |   | inboundC  | ~> RequestContext
+RequestContext ~> | inboundA  |~> |         |~> 0~~o broadcast |    +-----------+   |   |           |
+                  |           |   |         |   |  |           |                    |   +-----------+
+                  +-----------+   |         |   |  |           | ~> +-----------+   |
+                                  | inbound |   |  +-----------+    |  filter   |   |
+                                  | outbound|   |                   |  aborted  |   |
+                  +-----------+   |   B     |   |  +-----------+ <~ +-----------+   |   +-----------+
+                  |           |   |         |   |  |           |                    |   |           |
+RequestContext <~ | outboundA | <~|         | <~0~~o   merge   |                    |   | outboundC | <~ RequestContext
+                  |           |   |         |   |  |           o~~~~~~~~~~~~~~~~~~~~0 <~|           |
+                  +-----------+   +---------+   |  +-----------+                    |   +-----------+
+                                                +-----------------------------------+
 
 ```

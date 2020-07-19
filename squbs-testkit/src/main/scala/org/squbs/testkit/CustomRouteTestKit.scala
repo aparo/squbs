@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 PayPal
+ * Copyright 2017 PayPal
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,12 +16,12 @@
 
 package org.squbs.testkit
 
+import akka.http.scaladsl.testkit.ScalatestRouteTest
 import akka.testkit.TestKitBase
 import com.typesafe.config.Config
 import org.scalatest.Suite
 import org.squbs.lifecycle.GracefulStop
 import org.squbs.unicomplex.{Unicomplex, UnicomplexBoot}
-import spray.testkit.ScalatestRouteTest
 
 abstract class CustomRouteTestKit(val boot: UnicomplexBoot) extends {
   implicit override val system = boot.actorSystem
@@ -51,11 +51,11 @@ abstract class CustomRouteTestKit(val boot: UnicomplexBoot) extends {
     this(CustomTestKit.boot(config = Option(config), resources = Option(resources), withClassPath = Option(withClassPath)))
   }
 
-  override protected def beforeAll() {
+  override protected def beforeAll(): Unit = {
     CustomTestKit.checkInit(system)
   }
 
-  override protected def afterAll() {
+  override protected def afterAll(): Unit = {
     Unicomplex(system).uniActor ! GracefulStop
   }
 }

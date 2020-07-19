@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -22,25 +22,37 @@ import akka.actor.ActorSystem
 import akka.stream.scaladsl.{Broadcast, Flow, GraphDSL, Keep, RunnableGraph, Sink, Source}
 import akka.stream.{AbruptTerminationException, ActorMaterializer, ClosedShape}
 import akka.util.ByteString
+import com.typesafe.config.ConfigFactory
 import org.scalatest.concurrent.Eventually
-import org.scalatest.time.{Millis, Seconds, Span}
+import org.scalatest.time.{Seconds, Span}
 import org.scalatest.{BeforeAndAfterAll, FlatSpec, Matchers}
 import org.squbs.testkit.Timeouts._
 
 import scala.concurrent.{Await, Promise}
 import scala.reflect._
 
-abstract class PersistentBufferSpec[T: ClassTag, Q <: QueueSerializer[T]: Manifest]
-(typeName: String, autoCommit: Boolean = true) extends FlatSpec with Matchers with BeforeAndAfterAll with Eventually {
+object PersistentBufferSpec {
+  val testConfig = ConfigFactory.parseString(
+    """
+      |akka.actor.default-dispatcher {
+      |  executor = "affinity-pool-executor"
+      |  affinity-pool-executor {
+      |    parallelism-min = 1
+      |    parallelism-max = 2
+      |  }
+      |}
+    """.stripMargin)
+}
 
-  implicit val system = ActorSystem(s"Persistent${typeName}BufferSpec")
+abstract class PersistentBufferSpec[T: ClassTag, Q <: QueueSerializer[T]: Manifest]
+(typeName: String) extends FlatSpec with Matchers with BeforeAndAfterAll with Eventually {
+
+  implicit val system = ActorSystem(s"Persistent${typeName}BufferSpec", PersistentBufferSpec.testConfig)
   implicit val mat = ActorMaterializer()
   implicit val serializer = QueueSerializer[T]()
+  implicit override val patienceConfig = PatienceConfig(timeout = Span(3, Seconds)) // extend eventually timeout for CI
   import StreamSpecUtil._
   import system.dispatcher
-
-  implicit override val patienceConfig =
-    PatienceConfig(timeout = scaled(Span(30, Seconds)), interval = scaled(Span(500, Millis)))
 
   val transform = Flow[Int] map createElement
 
@@ -53,12 +65,11 @@ abstract class PersistentBufferSpec[T: ClassTag, Q <: QueueSerializer[T]: Manife
   def format(element: T): String
 
   it should s"buffer a stream of $elementCount elements" in {
-    val util = new StreamSpecUtil[T](autoCommit = autoCommit)
+    val util = new StreamSpecUtil[T, T]
     import util._
-    val buffer = new PersistentBuffer[T](config)
+    val buffer = PersistentBuffer[T](config)
     buffer.queue.serializer shouldBe a [Q]
-    val commit = buffer.commit[T] // makes a dummy flow if autocommit is set to false
-    val countFuture = in.via(transform).via(buffer.async).via(commit).runWith(flowCounter)
+    val countFuture = in.via(transform).via(buffer.async).runWith(flowCounter)
     val count = Await.result(countFuture, awaitMax)
     count shouldBe elementCount
     eventually { buffer.queue shouldBe 'closed }
@@ -66,15 +77,13 @@ abstract class PersistentBufferSpec[T: ClassTag, Q <: QueueSerializer[T]: Manife
   }
 
   it should s"buffer a stream of $elementCount elements using GraphDSL and custom config" in {
-    val util = new StreamSpecUtil[T](autoCommit = autoCommit)
+    val util = new StreamSpecUtil[T, T]
     import util._
-    val buffer = new PersistentBuffer[T](config)
-    val commit = buffer.commit[T] // makes a dummy flow if autocommit is set to false
-
+    val buffer = PersistentBuffer[T](config)
     val streamGraph = RunnableGraph.fromGraph(GraphDSL.create(flowCounter) { implicit builder =>
       sink =>
         import GraphDSL.Implicits._
-        in ~> transform ~> buffer.async ~> commit ~> sink
+        in ~> transform ~> buffer.async ~> sink
         ClosedShape
     })
     val countFuture = streamGraph.run()
@@ -86,9 +95,9 @@ abstract class PersistentBufferSpec[T: ClassTag, Q <: QueueSerializer[T]: Manife
 
   it should "buffer for a throttled stream" in {
     var t1, t2 = Long.MinValue
-    val util = new StreamSpecUtil[T](autoCommit = autoCommit)
+    val util = new StreamSpecUtil[T, T]
     import util._
-    val buffer = new PersistentBuffer[T](config)
+    val buffer = PersistentBuffer[T](config)
     val t0 = System.nanoTime
     def counter(recordFn: Long => Unit) = Flow[Any].map( _ => 1L).reduce(_ + _).map { s =>
       recordFn(System.nanoTime - t0)
@@ -99,11 +108,10 @@ abstract class PersistentBufferSpec[T: ClassTag, Q <: QueueSerializer[T]: Manife
       (sink, total) =>
         import GraphDSL.Implicits._
         val bc1 = builder.add(Broadcast[T](2))
-        val bc2 = builder.add(Broadcast[Event[T]](2))
-        val commit = buffer.commit[T] // makes a dummy flow if autocommit is set to false
-        in ~> transform ~> bc1 ~> buffer.async ~> throttle ~> commit ~> bc2 ~> sink
-        bc2 ~> total
-        bc1 ~> counter(t2 = _)
+        val bc2 = builder.add(Broadcast[T](2))
+        in ~> transform ~> bc1 ~> buffer.async ~> throttle ~> bc2 ~> sink
+                                                              bc2 ~> total
+                           bc1 ~> counter(t2 = _)
         ClosedShape
     })
     val (countF, totalF) = streamGraph.run()
@@ -120,11 +128,10 @@ abstract class PersistentBufferSpec[T: ClassTag, Q <: QueueSerializer[T]: Manife
   }
 
   it should "recover from unexpected stream shutdown" in {
-    implicit val util = new StreamSpecUtil[T](autoCommit = autoCommit)
+    implicit val util = new StreamSpecUtil[T, T]
     import util._
 
     val mat = ActorMaterializer()
-    var t = Long.MinValue
     val pBufferInCount = new AtomicInteger(0)
     val commitCount = new AtomicInteger(0)
     val finishedGenerating = Promise[Done]
@@ -140,11 +147,12 @@ abstract class PersistentBufferSpec[T: ClassTag, Q <: QueueSerializer[T]: Manife
     val graph = RunnableGraph.fromGraph(GraphDSL.create(Sink.ignore) { implicit builder =>
       sink =>
         import GraphDSL.Implicits._
-        val buffer = new PersistentBuffer[T](config).withOnPushCallback(() => pBufferInCount.incrementAndGet()).withOnCommitCallback(() =>  commitCount.incrementAndGet())
-        val commit = buffer.commit[T] // makes a dummy flow if autocommit is set to false
+        val buffer = PersistentBuffer[T](config)
+          .withOnPushCallback(() => pBufferInCount.incrementAndGet())
+          .withOnCommitCallback(() => commitCount.incrementAndGet())
         val bc = builder.add(Broadcast[T](2))
 
-        in ~> transform ~> bc ~> buffer.async ~> throttle ~> commit ~> sink
+        in ~> transform ~> bc ~> buffer.async ~> throttle ~> sink
                            bc ~> fireFinished()
 
         ClosedShape
@@ -153,15 +161,15 @@ abstract class PersistentBufferSpec[T: ClassTag, Q <: QueueSerializer[T]: Manife
     Await.result(shutdownF, awaitMax)
     Await.result(sinkF.failed, awaitMax) shouldBe an[AbruptTerminationException]
 
-    val restartFrom = pBufferInCount.incrementAndGet()
+    val restartFrom = commitCount.get()
     println(s"Restart from count $restartFrom")
 
-    resumeGraphAndDoAssertion(commitCount.get, restartFrom)
+    resumeGraphAndDoAssertion(pBufferInCount.get, restartFrom)
     clean()
   }
 
   it should "recover from downstream failure" in {
-    implicit val util = new StreamSpecUtil[T](autoCommit = autoCommit)
+    implicit val util = new StreamSpecUtil[T, T]
     import util._
 
     val mat = ActorMaterializer()
@@ -169,7 +177,7 @@ abstract class PersistentBufferSpec[T: ClassTag, Q <: QueueSerializer[T]: Manife
     val injectCounter = new AtomicInteger(0)
     val inCounter = new AtomicInteger(0)
 
-    val injectError = Flow[Event[T]].map { n =>
+    val injectError = Flow[T].map { n =>
       val count = injectCounter.incrementAndGet()
       if (count == failTestAt) throw new NumberFormatException("This is a fake exception")
       else n
@@ -178,21 +186,20 @@ abstract class PersistentBufferSpec[T: ClassTag, Q <: QueueSerializer[T]: Manife
     val graph = RunnableGraph.fromGraph(GraphDSL.create(Sink.ignore) { implicit builder =>
       sink =>
         import GraphDSL.Implicits._
-        val buffer = new PersistentBuffer[T](config).withOnPushCallback(() => inCounter.incrementAndGet()).withOnCommitCallback(() => outCount.incrementAndGet())
-        val commit = buffer.commit[T] // makes a dummy flow if autocommit is set to false
-        in ~> transform ~> buffer.async ~> throttle ~> injectError ~> commit ~> sink
+        val buffer = PersistentBuffer[T](config).withOnPushCallback(() => inCounter.incrementAndGet()).withOnCommitCallback(() => outCount.incrementAndGet())
+        in ~> transform ~> buffer.async ~> throttle ~> injectError ~> sink
         ClosedShape
     })
     val sinkF = graph.run()(mat)
     Await.result(sinkF.failed, awaitMax) shouldBe an[NumberFormatException]
-    val restartFrom = inCounter.incrementAndGet()
+    val restartFrom = outCount.get()
     println(s"Restart from count $restartFrom")
-    resumeGraphAndDoAssertion(outCount.get, restartFrom)
+    resumeGraphAndDoAssertion(inCounter.get, restartFrom)
     clean()
   }
 
   it should "recover from upstream failure" in {
-    implicit val util = new StreamSpecUtil[T](autoCommit = autoCommit)
+    implicit val util = new StreamSpecUtil[T, T]
     import util._
     val mat = ActorMaterializer()
     val recordCount = new AtomicInteger(0)
@@ -204,12 +211,11 @@ abstract class PersistentBufferSpec[T: ClassTag, Q <: QueueSerializer[T]: Manife
 
     def updateCounter() = Sink.foreach[Any] { _ => recordCount.incrementAndGet() }
 
-    val buffer = new PersistentBuffer[T](config)
+    val buffer = PersistentBuffer[T](config)
     val graph = RunnableGraph.fromGraph(GraphDSL.create(updateCounter()) { implicit builder =>
       sink =>
         import GraphDSL.Implicits._
-        val commit = buffer.commit[T] // makes a dummy flow if autocommit is set to false
-        in ~> injectError ~> transform ~> buffer.async ~> throttle ~> commit ~> sink
+        in ~> injectError ~> transform ~> buffer.async ~> throttle ~> sink
         ClosedShape
     })
     val countF = graph.run()(mat)
@@ -219,24 +225,23 @@ abstract class PersistentBufferSpec[T: ClassTag, Q <: QueueSerializer[T]: Manife
     clean()
   }
 
-  private def resumeGraphAndDoAssertion(beforeShutDown: Long, restartFrom: Int)(implicit util: StreamSpecUtil[T]) = {
+  private def resumeGraphAndDoAssertion(beforeShutDown: Long, restartFrom: Int)(implicit util: StreamSpecUtil[T, T]) = {
     import util._
-    val buffer = new PersistentBuffer[T](config)
+    val buffer = PersistentBuffer[T](config)
     val graph = RunnableGraph.fromGraph(
       GraphDSL.create(flowCounter, head)((_,_)) { implicit builder =>
         (sink, first) =>
           import GraphDSL.Implicits._
-          val commit = buffer.commit[T] // makes a dummy flow if autocommit is set to false
-        val bc = builder.add(Broadcast[Event[T]](2))
-          Source(restartFrom to (elementCount + elementsAfterFail)) ~> transform ~> buffer.async ~> commit ~> bc ~> sink
-                                                                                                              bc ~> first
+        val bc = builder.add(Broadcast[T](2))
+          Source(restartFrom to (elementCount + elementsAfterFail)) ~> transform ~> buffer.async ~> bc ~> sink
+                                                                                                    bc ~> first
           ClosedShape
       })
     val (countF, firstF) = graph.run()(ActorMaterializer())
     val afterRecovery = Await.result(countF, awaitMax)
     val first = Await.result(firstF, awaitMax)
     eventually { buffer.queue shouldBe 'closed }
-    println(s"First record processed after shutdown => ${format(first.entry)}")
+    println(s"First record processed after shutdown => ${format(first)}")
     assertions(beforeShutDown, afterRecovery, totalProcessed)
   }
 
@@ -330,81 +335,3 @@ class PersistentPersonBufferSpec extends PersistentBufferSpec[Person, PersonSeri
   def format(element: Person): String = element.toString
 }
 
-class PersistentByteStringBufferNoAutoCommitSpec extends PersistentBufferSpec[ByteString, ByteStringSerializer]("ByteString", false) {
-
-  def createElement(n: Int): ByteString = ByteString(s"Hello $n")
-
-  def format(element: ByteString): String = element.utf8String
-}
-
-class PersistentStringBufferNoAutoCommitSpec extends PersistentBufferSpec[String, ObjectSerializer[String]]("Object", false) {
-
-  def createElement(n: Int): String = s"Hello $n"
-
-  def format(element: String): String = element
-}
-
-class PersistentLongBufferNoAutoCommitSpec extends PersistentBufferSpec[Long, LongSerializer]("Long", false) {
-
-  def createElement(n: Int): Long = n
-
-  def format(element: Long): String = element.toString
-}
-
-class PersistentIntBufferNoAutoCommitSpec extends PersistentBufferSpec[Int, IntSerializer]("Int", false) {
-
-  def createElement(n: Int): Int = n
-
-  def format(element: Int): String = element.toString
-}
-
-class PersistentShortBufferNoAutoCommitSpec extends PersistentBufferSpec[Short, ShortSerializer]("Short", false) {
-
-  def createElement(n: Int): Short = n.toShort
-
-  def format(element: Short): String = element.toString
-}
-
-class PersistentByteBufferNoAutoCommitSpec extends PersistentBufferSpec[Byte, ByteSerializer]("Byte", false) {
-
-  def createElement(n: Int): Byte = n.toByte
-
-  def format(element: Byte): String = element.toString
-}
-
-class PersistentCharBufferNoAutoCommitSpec extends PersistentBufferSpec[Char, CharSerializer]("Char", false) {
-
-  def createElement(n: Int): Char = n.toChar
-
-  def format(element: Char): String = element.toString
-}
-
-class PersistentDoubleBufferNoAutoCommitSpec extends PersistentBufferSpec[Double, DoubleSerializer]("Double", false) {
-
-  def createElement(n: Int): Double = n.toDouble
-
-  def format(element: Double): String = element.toString
-}
-
-class PersistentFloatBufferNoAutoCommitSpec extends PersistentBufferSpec[Float, FloatSerializer]("Float", false) {
-
-  def createElement(n: Int): Float = n.toFloat
-
-  def format(element: Float): String = element.toString
-}
-
-class PersistentBooleanBufferNoAutoCommitSpec extends PersistentBufferSpec[Boolean, BooleanSerializer]("Boolean", false) {
-
-  def createElement(n: Int): Boolean = n % 2 == 0
-
-  def format(element: Boolean): String = element.toString
-}
-
-class PersistentPersonBufferNoAutoCommitSpec extends PersistentBufferSpec[Person, PersonSerializer]("Person", false) {
-
-  override implicit val serializer = new PersonSerializer()
-
-  def createElement(n: Int): Person = Person(s"John Doe $n", 20)
-
-  def format(element: Person): String = element.toString
-}

@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 PayPal
+ * Copyright 2017 PayPal
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -63,7 +63,7 @@ object PortGetterSpec {
 class PortGetterSpec extends TestKit(PortGetterSpec.boot("portGetterSpec").actorSystem) with ImplicitSender
   with FlatSpecLike with Matchers with BeforeAndAfterAll with PortGetter {
 
-  override def afterAll() {
+  override def afterAll(): Unit = {
     Unicomplex(system).uniActor ! GracefulStop
   }
 
@@ -76,7 +76,7 @@ class PortGetterSpec extends TestKit(PortGetterSpec.boot("portGetterSpec").actor
 class PortGetterCustomListenerSpec extends TestKit(PortGetterSpec.boot("PortGetterCustomListenerSpec").actorSystem)
   with ImplicitSender with FlatSpecLike with Matchers with BeforeAndAfterAll with PortGetter {
 
-  override def afterAll() {
+  override def afterAll(): Unit = {
     Unicomplex(system).uniActor ! GracefulStop
   }
 

@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -16,22 +16,22 @@
 
 package org.squbs.pattern.validation
 
-import com.wix.accord.Validator
-import spray.routing.Directives._
-import spray.routing._
+import akka.http.scaladsl.server.Directives._
+import akka.http.scaladsl.server.{Directive, ValidationRejection}
+import com.wix.accord.{Descriptions, Validator}
+import scala.language.implicitConversions
 
 trait ValidationDirectives {
   def validate(magnet: ValidationMagnet) = magnet()
 }
 
-// Later on we can rename it to squbsDirectives, when we have more maybe ?
 object ValidationDirectives extends ValidationDirectives
 
 /**
- * @see <a href="http://spray.io/blog/2012-12-13-the-magnet-pattern">Magnet Pattern</a>
- */
+  * @see <a href="http://spray.io/blog/2012-12-13-the-magnet-pattern">Magnet Pattern</a>
+  */
 sealed trait ValidationMagnet {
-  def apply(): Directive0
+  def apply(): Directive[Unit]
 }
 
 object ValidationMagnet {
@@ -43,7 +43,8 @@ object ValidationMagnet {
 
         result match {
           case com.wix.accord.Success => pass
-          case com.wix.accord.Failure(violations) => reject(ValidationRejection(violations flatMap {violation => violation.description} mkString(", ")))
+          case com.wix.accord.Failure(violations) => reject(
+            ValidationRejection(violations map { v => Descriptions.render(v.path) } mkString ", "))
         }
       }
     }

@@ -1,5 +1,5 @@
 /*
- *  Copyright 2015 PayPal
+ *  Copyright 2017 PayPal
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -39,6 +39,6 @@ public class UnicomplexActorPublisherJ {
 
     public Pair<Pair<TestPublisher.Probe<String>, ActorRef>, TestSubscriber.Probe<String>> runnableGraph() {
         Source<String, TestPublisher.Probe<String>> in = TestSource.<String>probe(system);
-        return new LifecycleManaged<String, TestPublisher.Probe<String>>(system).source(in).toMat(TestSink.<String>probe(system), Keep.both()).run(materializer);
+        return new LifecycleManaged<String, TestPublisher.Probe<String>>().source(in).toMat(TestSink.<String>probe(system), Keep.both()).run(materializer);
     }
 }
